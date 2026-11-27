@@ -73,6 +73,7 @@ An inherited RTX 3090 report showed partial execution at approximately 0.53–0.
 | Motion vectors and jitter | CPU-side metadata contract validates extent, finite scale/jitter, explicit units/direction and previous-frame validity; renderer data is not wired |
 | Temporal history lifecycle | A CPU-side frame plan now pairs frame index, render extent, history reset/validity and deterministic Halton(2,3) jitter; projection application, motion vectors and GPU history remain unwired |
 | DLSS evaluation preflight | CPU-side gate checks frame/jitter/history, compatible color/depth, matching 2D motion vectors, single-sample non-array inputs and resources that permit shader-resource views, distinct resources and completed-submission transition proposals; it does not issue barriers or call Streamline |
+| DLSS output allocation policy | CPU-side reuse/reallocation decision; new allocations require a known DXGI local-memory budget and 25% headroom above the pixel payload estimate; this is a conservative estimate, not a residency guarantee |
 | DLSS output target | Validated output descriptors and a Windows D3D12 allocator now create a dedicated default-heap 2D UAV texture in `COMMON`; the allocator is not yet called by the presenter or Streamline, and GPU barriers/evaluation remain unwired |
 | Safe fallback | Normal presentation remains unchanged if `VICTORY_DLSS` is requested |
 
