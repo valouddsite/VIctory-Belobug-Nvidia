@@ -74,6 +74,7 @@ An inherited RTX 3090 report showed partial execution at approximately 0.53–0.
 | Temporal history lifecycle | A CPU-side frame plan now pairs frame index, render extent, history reset/validity and deterministic Halton(2,3) jitter; projection application, motion vectors and GPU history remain unwired |
 | DLSS evaluation preflight | CPU-side gate checks frame/jitter/history, compatible color/depth, matching 2D motion vectors, single-sample non-array inputs and resources that permit shader-resource views, distinct resources and completed-submission transition proposals; it does not issue barriers or call Streamline |
 | DLSS output allocation policy | Windows host now samples the live DXGI local-memory budget (`Budget - CurrentUsage`) before allocating, reuses an identical target, and refuses new allocation if the budget is unavailable or below the 25%-headroom estimate; driver residency and allocation can still fail |
+| DLSS output lifetime | CPU-side fence contract prevents reusing a matching output target before its last host-queue submission completes and records the submission after which a replaced target may be retired; the host still needs to wire the wait/retirement into real resource ownership |
 | DLSS output target | Validated output descriptors and a Windows D3D12 allocator now create a dedicated default-heap 2D UAV texture in `COMMON`; the allocator is not yet called by the presenter or Streamline, and GPU barriers/evaluation remain unwired |
 | Safe fallback | Normal presentation remains unchanged if `VICTORY_DLSS` is requested |
 
