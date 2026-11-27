@@ -30,8 +30,8 @@ These variables do not activate upscaling. The resolution scales in the prefligh
 
 ## Remaining implementation gates
 
-1. **Renderer resource inventory:** trace guest render targets, depth resources, camera constants, viewport/scissor state, resource formats and lifetime through command recording and submission.
-2. **Temporal data:** identify or generate correct per-pixel motion vectors for all rendered geometry; add sub-pixel projection jitter and preserve previous-frame transforms. Do not substitute guessed vectors or frame differencing.
+1. **Presentation/depth association:** bridge the final color texture passed to `Host::present_planes` to the matching depth resource recorded by `draw::State::set_targets`; validate matching dimensions, format, frame lifetime and resource state before exposing it to an upscaler. Existing DSV creation and binding support is useful groundwork, but is not yet a per-present DLSS input contract.
+2. **Temporal data:** identify whether the guest provides a usable motion-vector render target or whether the renderer can generate correct per-pixel vectors for all geometry; add sub-pixel projection jitter and preserve previous-frame transforms. Do not substitute guessed vectors or frame differencing.
 3. **Render graph / ordering:** expose scene color before tone mapping and UI composition; run the upscaler at the correct point, then composite UI at output resolution.
 4. **Resolution management:** separate guest internal render dimensions from output/swap-chain dimensions; handle resize, aspect ratio, dynamic resolution and history invalidation.
 5. **Streamline backend:** integrate a pinned, licensed NVIDIA Streamline SDK release, load only verified official binaries, initialize it at the required point in device startup, query feature/hardware support, tag resources and constants, evaluate DLSS SR, and clean up resources on shutdown.
