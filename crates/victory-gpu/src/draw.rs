@@ -1178,6 +1178,34 @@ impl State {
             return;
         }
         self.host_targets = Some(now);
+        // Preflight only: check a bound color target against its DSV before
+        // issuing the host binding. This is not yet a per-present temporal
+        // input contract; the final presented plane may be a later copy.
+        if let (Some(color), Some((depth, record))) = (
+            views.iter().find_map(|(texture, _)| *texture),
+            dsv.as_ref(),
+        ) {
+            let color_desc = unsafe { color.GetDesc() };
+            let depth_desc = unsafe { depth.GetDesc() };
+            if let Some(view) = record.depth_desc() {
+                crate::dlss::report_depth_pair_status(crate::dlss::validate_depth_pair(
+                    crate::dlss::TextureInfo {
+                        width: color_desc.Width as u32,
+                        height: color_desc.Height,
+                        samples: color_desc.SampleDesc.Count,
+                        dimension: color_desc.Dimension.0 as u32,
+                    },
+                    crate::dlss::TextureInfo {
+                        width: depth_desc.Width as u32,
+                        height: depth_desc.Height,
+                        samples: depth_desc.SampleDesc.Count,
+                        dimension: depth_desc.Dimension.0 as u32,
+                    },
+                    view.Format.0 as u32,
+                    view.ViewDimension.0 as u32,
+                ));
+            }
+        }
         let rtvs: Vec<_> = views.iter().map(|(texture, desc)| host.rtv(*texture, desc.as_ref())).collect();
         let dsv = dsv.map(|(texture, record)| host.dsv(texture, record.depth_desc().as_ref()));
         // SAFETY: an open list; the views were just made.

@@ -61,6 +61,24 @@ The inherited VIctory reference measurements were collected on an Intel Core i9-
 
 An inherited RTX 3090 report showed partial execution at approximately 0.53–0.55 seconds per frame. That does not establish RTX 5060 compatibility.
 
+## ◈ DLSS status
+
+| Component | Current status |
+|---|---|
+| Host Direct3D 12 swap chain | Implemented in the host presenter |
+| Current presentation | Copies the guest output texture, or composites the Series S planes, into the swap-chain back buffer |
+| Streamline SDK | Not integrated |
+| DLSS Super Resolution | Not active; no DLSS output is claimed |
+| Depth resources | Guest draw state records render-target and DSV bindings; binding-time color/depth extent and sample compatibility checks are now implemented, but association with the final presented frame is not yet wired |
+| Motion vectors and jitter | Not yet exposed as a verified temporal input set |
+| Safe fallback | Normal presentation remains unchanged if `VICTORY_DLSS` is requested |
+
+The host swap chain already exists; the missing work is the temporal upscaling path, not basic window presentation. The current presenter receives the finished guest texture and copies it to the back buffer. The guest draw layer already tracks render-target and depth-stencil bindings and now rejects incompatible color/depth pairs at binding time (extent, sample count and typed DSV format). This is only preflight diagnostics: the presenter does not yet receive a verified depth resource paired with the exact final color image. Motion vectors and jitter are also not exposed as a verified temporal input set.
+
+A preflight module now defines the required input contract, quality names and output-resolution planning, caches the requested state once per process, emits a single warning rather than spamming every frame, and explicitly reports DLSS as unavailable. Setting `VICTORY_DLSS=1` currently produces a warning and keeps normal presentation; it does **not** enable DLSS. `VICTORY_DLSS_QUALITY` accepts `quality`, `balanced`, `performance` or `ultra-performance` for future integration work only.
+
+See [docs/dlss-integration-status.md](docs/dlss-integration-status.md) for the remaining Streamline and renderer work. Do not treat this groundwork as a working DLSS implementation or as an RTX 5060 hardware test.
+
 ## ✦ CPU & pipeline optimisations
 
 Recent work targets CPU overhead around the host pipeline library and diagnostics:
