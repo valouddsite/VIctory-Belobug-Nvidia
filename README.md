@@ -132,7 +132,7 @@ and PC FidelityFX bridge were ported from [DexNom/VIctory](https://github.com/De
 
 On a hybrid-graphics PC, the runtime and offline pipeline checks prefer a
 high-performance adapter with Shader Model 6.6. The runtime logs its adapter
-name, PCI vendor and device IDs, and dedicated VRAM. Set
+name, PCI vendor and device IDs, and dedicated VRAM. It also reports the host wave-lane range and, when mesh-shader capability is queried, the reported mesh-shader tier and highest shader model. Set
 `VICTORY_D3D12_ADAPTER` to a zero-based DXGI index or part of the adapter's
 name to select it explicitly. With the launcher, pass
 `-More @{VICTORY_D3D12_ADAPTER='NVIDIA'}`.
