@@ -91,6 +91,21 @@ What is known to be wrong:
   (`victory warm` makes them ahead).
 - Recording a frame in the world makes the title's own watchdog end it.
 
+## Windows one-click launcher
+
+For the downloadable Windows test package, extract the ZIP and double-click
+`VIctory-Launcher.cmd`. Select your own game executable in the file picker,
+then choose the normal profile or the safe profile. The launcher creates
+`victory.toml` from the example when needed, passes the selected game folder
+only to that launch session, checks the resolved configuration, and records
+a diagnostic log in `logs/`. It does not change the machine or user
+PowerShell execution policy; the temporary bypass is limited to the launcher
+process started by the CMD file.
+
+The manual `scripts\\play.ps1` route remains available for advanced settings.
+Keep the game files outside the VIctory folder and do not run the launcher as
+Administrator.
+
 ## How to run it
 
 You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
