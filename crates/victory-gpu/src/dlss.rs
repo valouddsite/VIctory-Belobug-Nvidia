@@ -129,11 +129,14 @@ pub fn report_requested_but_unavailable() {
                 .unwrap_or_default()
         })
     });
+    static REPORTED: OnceLock<()> = OnceLock::new();
     if let Some(quality) = requested {
-        tracing::warn!(
-            ?quality,
-            "DLSS was requested but is NOT active: Streamline is not integrated and the renderer does not yet provide verified depth, motion-vector and jitter inputs; using the normal presentation path"
-        );
+        REPORTED.get_or_init(|| {
+            tracing::warn!(
+                ?quality,
+                "DLSS was requested but is NOT active: Streamline is not integrated and the renderer does not yet provide verified depth, motion-vector and jitter inputs; using the normal presentation path"
+            );
+        });
     }
 }
 
