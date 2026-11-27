@@ -79,7 +79,8 @@ pub(crate) enum Taken {
 
 static QUEUE: (Mutex<VecDeque<Arc<Job>>>, Condvar) = (Mutex::new(VecDeque::new()), Condvar::new());
 /// Those on their way, by host copy ([`HostTexture::serial`]).
-static ON_THEIR_WAY: Mutex<std::collections::HashMap<u64, Arc<Job>>> = Mutex::new(std::collections::HashMap::new());
+static ON_THEIR_WAY: std::sync::LazyLock<Mutex<std::collections::HashMap<u64, Arc<Job>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 static LANDED: Condvar = Condvar::new();
 static BYTES: AtomicU64 = AtomicU64::new(0);
 /// Since the start: uploads, bytes, microseconds from the asking until the
