@@ -63,12 +63,26 @@ impl Cache {
         let (tmp, mut file) = tempfile_in(dir)?;
         let written = file.write_all(&output);
         drop(file);
-        let published = written.and_then(|()| std::fs::rename(&tmp, &path));
+        let published = written.and_then(|()| publish_tempfile(&tmp, &path));
         if published.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
         published?;
         Ok(path)
+    }
+}
+
+/// Publishes a complete cache entry. If another process wins the race
+/// and creates the destination first (notably on Windows, where rename does
+/// not replace an existing file), keep that complete entry and discard ours.
+fn publish_tempfile(tmp: &Path, path: &Path) -> io::Result<()> {
+    match std::fs::rename(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_file() => {
+            std::fs::remove_file(tmp)?;
+            Ok(())
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -135,6 +149,27 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(std::fs::read(&a).unwrap(), b"ABC");
         assert_eq!(conv.runs.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn publishing_over_a_concurrent_winner_keeps_a_complete_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("entry");
+        let first = dir.path().join(".tmp-first");
+        let second = dir.path().join(".tmp-second");
+        std::fs::write(&first, b"complete first entry").unwrap();
+        std::fs::write(&second, b"complete second entry").unwrap();
+
+        publish_tempfile(&first, &target).unwrap();
+        publish_tempfile(&second, &target).unwrap();
+
+        let contents = std::fs::read(&target).unwrap();
+        assert!(
+            contents == b"complete first entry" || contents == b"complete second entry",
+            "the published entry must be one complete writer's output"
+        );
+        assert!(!first.exists());
+        assert!(!second.exists());
     }
 
     #[test]
