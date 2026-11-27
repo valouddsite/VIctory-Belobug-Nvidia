@@ -45,7 +45,7 @@ try {
     $picker.Filter = 'Exécutable Windows (*.exe)|*.exe|Tous les fichiers (*.*)|*.*'
     $picker.CheckFileExists = $true
     $picker.Multiselect = $false
-    $picker.InitialDirectory = [Environment]::GetFolderPath('MyComputer')
+    $picker.InitialDirectory = [Environment]::GetFolderPath('UserProfile')
     if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
         exit 0
     }
@@ -71,16 +71,29 @@ try {
     $gpuInfo = @()
     try {
         $gpuInfo = @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
-            Select-Object -ExpandProperty Name)
+            ForEach-Object { "$($_.Name) (pilote $($_.DriverVersion))" })
     } catch {
         $gpuInfo = @('GPU non détecté automatiquement')
     }
+    $cpuInfo = 'CPU non détecté automatiquement'
+    $ramInfo = 'RAM non détectée automatiquement'
+    $windowsInfo = [Environment]::OSVersion.VersionString
+    try {
+        $cpuInfo = (Get-CimInstance Win32_Processor -ErrorAction Stop |
+            Select-Object -First 1 -ExpandProperty Name).Trim()
+        $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        $ramInfo = '{0:N1} Go' -f ($computer.TotalPhysicalMemory / 1GB)
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $windowsInfo = "$($os.Caption) $($os.Version) (build $($os.BuildNumber))"
+    } catch {}
 
     Start-Transcript -LiteralPath $logPath -Force | Out-Null
     Write-Host '=== VIctory Windows launcher ==='
     Write-Host ("Date : {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-    Write-Host ("Windows : {0}" -f [Environment]::OSVersion.VersionString)
-    Write-Host ("GPU : {0}" -f ($gpuInfo -join '; '))
+    Write-Host ("Windows : {0}" -f $windowsInfo)
+    Write-Host ("CPU : {0}" -f $cpuInfo)
+    Write-Host ("RAM : {0}" -f $ramInfo)
+    Write-Host ("GPU / pilote : {0}" -f ($gpuInfo -join '; '))
     Write-Host ("Jeu : {0}" -f $gameExe)
     Write-Host ("Mode : {0}" -f $(if ($safe) { 'sécurisé' } else { 'normal' }))
     Write-Host ("Journal : {0}" -f $logPath)
