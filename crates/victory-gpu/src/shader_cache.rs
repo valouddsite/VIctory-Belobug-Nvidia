@@ -199,7 +199,7 @@ impl<F: Fn(&[u8]) -> Result<HostShader, String> + Send + Sync> Converter for Tra
     }
     fn convert(&self, input: &[u8]) -> anyhow::Result<Vec<u8>> {
         self.ran.store(true, Ordering::Relaxed);
-        let shader = (self.translate)(&input[32..]).map_err(anyhow::Error::msg)?;
+        let shader = (self.translate)(input).map_err(anyhow::Error::msg)?;
         Ok(encode(&shader, self.source))
     }
 }
@@ -225,7 +225,6 @@ fn cached_by(
     translate: impl Fn(&[u8]) -> Result<HostShader, String> + Send + Sync,
     refresh: bool,
 ) -> Result<HostShader, String> {
-    let input = [&build[..], container].concat();
     let converter = Translate {
         translate,
         source,
@@ -234,7 +233,7 @@ fn cached_by(
     let mut old: Option<HostShader> = None;
     for _ in 0..3 {
         let path = cache
-            .get_or_convert(&converter, &input)
+            .get_or_convert_with_prefix(&converter, build, container)
             .map_err(|e| format!("{e:#}"))?;
         if let Some((shader, made_by)) = std::fs::read(&path).ok().and_then(|b| decode(&b)) {
             let ran = converter.ran.load(Ordering::Relaxed);
