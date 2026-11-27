@@ -1,13 +1,21 @@
-# VIctory on an RX 7900 XTX
+# VIctory — NVIDIA RTX 5060 compatibility work
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
 that runs an Xbox Series title natively on Windows from files the user supplies.
 
+## NVIDIA RTX 5060 work
+
+This fork is being evaluated and adapted for NVIDIA GeForce RTX 5060 (8 GB VRAM). The current renderer already uses host Direct3D 12 and has generic DXGI adapter selection; this does **not** yet mean RTX 5060 compatibility or playable performance has been demonstrated.
+
+The existing RX 7900 XTX measurements below are reference results from the AMD development machine, not RTX 5060 results. The only reported NVIDIA run in the inherited baseline is an RTX 3090 run at roughly 0.53–0.55 seconds per frame, so it is evidence of partial NVIDIA execution, not evidence that the RTX 5060 works well.
+
+The adaptation will prioritize: correct NVIDIA adapter selection and capability reporting; shader-model/mesh-shader compatibility; VRAM-budget-aware resource residency for an 8 GB card; and reproducible Windows builds and tests. GPU runtime performance must be measured on a real RTX 5060 before any performance claim is made.
+
 ## The goal
 
 **A stable 30 fps or more without ray tracing, then as high a frame rate and as
-low frame times as the PC allows**, on an AMD RX 7900 XTX first and on PCs with
-32 GB (later 16 GB) of RAM.
+low frame times as the PC allows**, with the NVIDIA RTX 5060 as the first target
+for this fork. Existing AMD results remain reference measurements only.
 
 The way there is **porting, not emulating**: patching the title's renderer so it
 behaves the way a PC renderer does, rather than having the layer watch and copy
