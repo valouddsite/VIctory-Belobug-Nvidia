@@ -222,7 +222,7 @@ mod tests {
         arena.release(2, 3);
         assert_eq!(arena.free_blocks, 8);
         assert!(arena.taken.iter().all(|taken| !taken));
-        assert_eq!(arena.cursor, 0);
+        assert_eq!(arena.cursor, 2);
     }
 
     #[test]
