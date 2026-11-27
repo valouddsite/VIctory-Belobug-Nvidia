@@ -636,11 +636,14 @@ pub struct DlssEvaluationInputs {
     pub color_texture: TextureInfo,
     pub depth_texture: TextureInfo,
     pub motion_vectors_texture: TextureInfo,
+    /// Dedicated output texture at the final presentation resolution.
+    pub output_texture: TextureInfo,
     pub depth_view_format: u32,
     pub depth_view_dimension: u32,
     pub color_resource_id: usize,
     pub depth_resource_id: usize,
     pub motion_vectors_resource_id: usize,
+    pub output_resource_id: usize,
     pub recording_list: usize,
     pub expected_recording_list: usize,
     pub submission: u64,
@@ -658,6 +661,8 @@ pub enum DlssEvaluationPlanError {
     InvalidColorDepthPair(DepthPairStatus),
     MotionVectorTextureMismatch,
     MotionVectorsShaderResourceDenied,
+    OutputTextureMismatch,
+    OutputNotUnorderedAccessCapable,
     MultisampledInput,
     TextureArrayNotSupported,
     OutputIsNotLargerThanRender,
@@ -676,6 +681,7 @@ pub struct DlssEvaluationPlan {
     pub render_height: u32,
     pub output_width: u32,
     pub output_height: u32,
+    pub output_resource_id: usize,
     pub jitter: TemporalJitter,
     pub reset_history: bool,
     pub color_transition: ShaderReadTransitionPlan,
@@ -749,6 +755,22 @@ pub fn plan_dlss_evaluation(
     {
         return Err(DlssEvaluationPlanError::OutputIsNotLargerThanRender);
     }
+    // DLSS SR needs a distinct final-resolution output target. A swap-chain
+    // back buffer is not assumed to support UAV access; the renderer must
+    // supply a dedicated texture whose descriptor explicitly allows UAVs.
+    let output = inputs.output_texture;
+    if output.width != resolution.output_width
+        || output.height != resolution.output_height
+        || output.dimension != 3
+        || output.samples != 1
+        || output.array_size != 1
+    {
+        return Err(DlssEvaluationPlanError::OutputTextureMismatch);
+    }
+    const ALLOW_UNORDERED_ACCESS: u32 = 0x4;
+    if output.flags & ALLOW_UNORDERED_ACCESS == 0 {
+        return Err(DlssEvaluationPlanError::OutputNotUnorderedAccessCapable);
+    }
     if metadata.jitter_x_pixels != frame.jitter.x_pixels
         || metadata.jitter_y_pixels != frame.jitter.y_pixels
     {
@@ -764,11 +786,15 @@ pub fn plan_dlss_evaluation(
         inputs.color_resource_id,
         inputs.depth_resource_id,
         inputs.motion_vectors_resource_id,
+        inputs.output_resource_id,
     ];
     if resources.contains(&0)
         || resources[0] == resources[1]
         || resources[0] == resources[2]
         || resources[1] == resources[2]
+        || resources[3] == resources[0]
+        || resources[3] == resources[1]
+        || resources[3] == resources[2]
     {
         return Err(DlssEvaluationPlanError::AliasedResources);
     }
@@ -794,6 +820,7 @@ pub fn plan_dlss_evaluation(
         render_height: resolution.render_height,
         output_width: resolution.output_width,
         output_height: resolution.output_height,
+        output_resource_id: inputs.output_resource_id,
         jitter: frame.jitter,
         reset_history: false,
         color_transition: transition(
@@ -858,11 +885,13 @@ mod dlss_evaluation_plan_tests {
             color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
             depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
             motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
+            output_texture: TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3, array_size: 1, flags: 0x4 },
             depth_view_format: 40,
             depth_view_dimension: 3,
             color_resource_id: 0x100,
             depth_resource_id: 0x200,
             motion_vectors_resource_id: 0x300,
+            output_resource_id: 0x400,
             recording_list: 0xabc,
             expected_recording_list: 0xabc,
             submission: 9,
@@ -879,6 +908,7 @@ mod dlss_evaluation_plan_tests {
         assert_eq!(plan.frame_index, 2);
         assert_eq!((plan.render_width, plan.render_height), (1280, 720));
         assert_eq!((plan.output_width, plan.output_height), (1920, 1080));
+        assert_eq!(plan.output_resource_id, 0x400);
         assert_eq!(plan.color_transition.after_state, 0xC0);
         assert_eq!(plan.depth_transition.after_state, 0xE0);
         assert_eq!(plan.motion_vectors_transition.after_state, 0xC0);
@@ -924,6 +954,29 @@ mod dlss_evaluation_plan_tests {
         let mut inputs = valid_inputs();
         inputs.motion_vectors_texture.samples = 2;
         assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
+    }
+
+    #[test]
+    fn output_target_must_be_final_resolution_single_sample_2d_and_uav_capable() {
+        let mut inputs = valid_inputs();
+        inputs.output_texture.width = 1280;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.output_texture.samples = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.output_texture.array_size = 2;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.output_texture.flags = 0;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputNotUnorderedAccessCapable));
+
+        let mut inputs = valid_inputs();
+        inputs.output_resource_id = inputs.color_resource_id;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::AliasedResources));
     }
 
     #[test]
