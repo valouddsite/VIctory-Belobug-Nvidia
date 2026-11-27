@@ -458,6 +458,78 @@ pub(crate) fn consume_present_depth_candidate(
     Some(candidate)
 }
 
+
+/// A validated, CPU-side proposal for moving a completed resource into a
+/// shader-resource state. This deliberately does not create or submit a
+/// D3D12 barrier; the caller must still prove queue ownership and ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShaderReadTransitionPlan {
+    pub resource_id: usize,
+    pub before_state: u32,
+    pub after_state: u32,
+    pub recording_list: usize,
+    pub submission: u64,
+    pub barrier_required: bool,
+}
+
+/// Why a proposed shader-read transition was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderReadTransitionError {
+    NullResource,
+    NullRecordingList,
+    RecordingListMismatch,
+    Unsubmitted,
+    SubmissionNotCompleted,
+    UnknownBeforeState,
+    InvalidShaderReadTarget,
+}
+
+/// Validate the identity and completion metadata before a future renderer
+/// integration is allowed to construct a D3D12 transition barrier.
+///
+/// This is a preflight contract only. In particular, completion of one host
+/// submission does not prove that another queue has not changed the resource.
+pub fn plan_shader_read_transition(
+    resource_id: usize,
+    recording_list: usize,
+    expected_recording_list: usize,
+    submission: u64,
+    finished_submission: u64,
+    before_state: u32,
+    after_state: u32,
+) -> Result<ShaderReadTransitionPlan, ShaderReadTransitionError> {
+    if resource_id == 0 {
+        return Err(ShaderReadTransitionError::NullResource);
+    }
+    if recording_list == 0 || expected_recording_list == 0 {
+        return Err(ShaderReadTransitionError::NullRecordingList);
+    }
+    if recording_list != expected_recording_list {
+        return Err(ShaderReadTransitionError::RecordingListMismatch);
+    }
+    if submission == 0 {
+        return Err(ShaderReadTransitionError::Unsubmitted);
+    }
+    if submission > finished_submission {
+        return Err(ShaderReadTransitionError::SubmissionNotCompleted);
+    }
+    if matches!(classify_host_resource_state(before_state), HostResourceStateClass::Unknown) {
+        return Err(ShaderReadTransitionError::UnknownBeforeState);
+    }
+    if !is_shader_resource_readable(after_state) {
+        return Err(ShaderReadTransitionError::InvalidShaderReadTarget);
+    }
+
+    Ok(ShaderReadTransitionPlan {
+        resource_id,
+        before_state,
+        after_state,
+        recording_list,
+        submission,
+        barrier_required: before_state != after_state,
+    })
+}
+
 #[cfg(test)]
 mod candidate_registry_tests {
     use super::FrameCandidateRegistry;
@@ -712,3 +784,80 @@ mod tests {
     }
 
 }
+
+
+#[cfg(test)]
+mod shader_read_transition_tests {
+    use super::{
+        plan_shader_read_transition, ShaderReadTransitionError as Error,
+    };
+
+    const PIXEL_READ: u32 = 0x80;
+    const NON_PIXEL_READ: u32 = 0x40;
+    const RENDER_TARGET: u32 = 0x4;
+
+    #[test]
+    fn completed_matching_submission_produces_a_transition_plan() {
+        let plan = plan_shader_read_transition(
+            0x100, 0xabc, 0xabc, 12, 12, RENDER_TARGET,
+            PIXEL_READ | NON_PIXEL_READ,
+        ).unwrap();
+        assert_eq!(plan.resource_id, 0x100);
+        assert_eq!(plan.before_state, RENDER_TARGET);
+        assert_eq!(plan.after_state, PIXEL_READ | NON_PIXEL_READ);
+        assert!(plan.barrier_required);
+    }
+
+    #[test]
+    fn already_shader_readable_state_does_not_need_a_barrier() {
+        let plan = plan_shader_read_transition(
+            0x100, 0xabc, 0xabc, 12, 12, PIXEL_READ, PIXEL_READ,
+        ).unwrap();
+        assert!(!plan.barrier_required);
+    }
+
+    #[test]
+    fn rejects_null_resource_and_recording_list() {
+        assert_eq!(
+            plan_shader_read_transition(0, 0xabc, 0xabc, 1, 1, 0, PIXEL_READ),
+            Err(Error::NullResource)
+        );
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0, 0, 1, 1, 0, PIXEL_READ),
+            Err(Error::NullRecordingList)
+        );
+    }
+
+    #[test]
+    fn rejects_a_different_recording_list() {
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xdef, 1, 1, 0, PIXEL_READ),
+            Err(Error::RecordingListMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_unsubmitted_and_incomplete_submissions() {
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 0, 0, 0, PIXEL_READ),
+            Err(Error::Unsubmitted)
+        );
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 9, 8, 0, PIXEL_READ),
+            Err(Error::SubmissionNotCompleted)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_source_and_non_shader_target_states() {
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 1, 1, 0x1000, PIXEL_READ),
+            Err(Error::UnknownBeforeState)
+        );
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 1, 1, 0, RENDER_TARGET),
+            Err(Error::InvalidShaderReadTarget)
+        );
+    }
+}
+
