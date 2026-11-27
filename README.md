@@ -75,7 +75,7 @@ An inherited RTX 3090 report showed partial execution at approximately 0.53–0.
 
 The host swap chain already exists; the missing work is the temporal upscaling path, not basic window presentation. The current presenter receives the finished guest texture and copies it to the back buffer. It does not yet have a verified set of scene color, depth, motion vectors and jitter suitable for temporal reconstruction.
 
-A preflight module now defines the required input contract, quality names and output-resolution planning, and explicitly reports DLSS as unavailable. Setting `VICTORY_DLSS=1` currently produces a warning and keeps normal presentation; it does **not** enable DLSS. `VICTORY_DLSS_QUALITY` accepts `quality`, `balanced`, `performance` or `ultra-performance` for future integration work only.
+A preflight module now defines the required input contract, quality names and output-resolution planning, caches the requested state once per process, and explicitly reports DLSS as unavailable. Setting `VICTORY_DLSS=1` currently produces a warning and keeps normal presentation; it does **not** enable DLSS. `VICTORY_DLSS_QUALITY` accepts `quality`, `balanced`, `performance` or `ultra-performance` for future integration work only.
 
 See [docs/dlss-integration-status.md](docs/dlss-integration-status.md) for the remaining Streamline and renderer work. Do not treat this groundwork as a working DLSS implementation or as an RTX 5060 hardware test.
 
