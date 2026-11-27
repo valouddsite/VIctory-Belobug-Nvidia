@@ -31,8 +31,21 @@ if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }
 if ($Fsr4K) { $settings.VICTORY_FSR_4K = $Fsr4K.ToLowerInvariant() }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 
-$victory = Join-Path $PSScriptRoot "..\target\$Build\victory.exe"
-if (-not (Test-Path $victory)) { Write-Host "No $victory. Build it first (README.md)."; exit 1 }
+# Development checkouts keep binaries under target\<profile>; the downloadable
+# Windows package places its release binary beside this script's parent folder.
+$packageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$victory = Join-Path $packageRoot "target\$Build\victory.exe"
+if (-not (Test-Path $victory) -and $Build -eq 'release') {
+    $packagedRelease = Join-Path $packageRoot 'victory.exe'
+    if (Test-Path $packagedRelease) { $victory = $packagedRelease }
+}
+if (-not (Test-Path $victory)) {
+    Write-Host "No VIctory executable found for build '$Build'."
+    Write-Host "Checked: $(Join-Path $packageRoot "target\$Build\victory.exe")"
+    if ($Build -eq 'release') { Write-Host "Also checked packaged executable: $(Join-Path $packageRoot 'victory.exe')" }
+    Write-Host 'Build it first (README.md), or re-download and extract the complete Windows test package.'
+    exit 1
+}
 if (-not (Test-Path $Exe)) { Write-Host "No $Exe."; exit 1 }
 # (Other settings left over in this window go; where your files are stays.)
 $paths = 'VICTORY_CONFIG', 'VICTORY_GAME_DIR', 'VICTORY_CACHE_DIR', 'VICTORY_DATA_DIR', 'VICTORY_FIDELITYFX_DIR'
@@ -46,5 +59,5 @@ if ($discarded) {
     Write-Host "Discarded inherited values for $($discarded.Name -join ', '). Use -More to pass them explicitly."
 }
 $Exe = (Resolve-Path $Exe).Path
-Push-Location (Join-Path $PSScriptRoot '..')   # victory.toml is looked for here
+Push-Location $packageRoot   # victory.toml is looked for here
 try { & $victory run $Exe --execute } finally { Pop-Location }
