@@ -196,6 +196,8 @@ pub struct TextureInfo {
     pub dimension: u32,
     /// Number of array slices in the D3D12 texture resource.
     pub array_size: u32,
+    /// Raw D3D12_RESOURCE_FLAGS bits from the host resource descriptor.
+    pub flags: u32,
 }
 
 /// Conservative classification of the host-side D3D12 state tracker.
@@ -281,6 +283,7 @@ pub enum DepthPairStatus {
     ExtentMismatch,
     SampleCountMismatch,
     UnsupportedDepthFormat,
+    ShaderResourceDenied,
 }
 
 /// Validate a scene-color texture against its bound depth view.
@@ -306,6 +309,10 @@ pub fn validate_depth_pair(
     }
     if color.samples != depth.samples {
         return DepthPairStatus::SampleCountMismatch;
+    }
+    const DENY_SHADER_RESOURCE: u32 = 0x8;
+    if color.flags & DENY_SHADER_RESOURCE != 0 || depth.flags & DENY_SHADER_RESOURCE != 0 {
+        return DepthPairStatus::ShaderResourceDenied;
     }
     if !DEPTH_FORMATS.contains(&depth_view_format) {
         return DepthPairStatus::UnsupportedDepthFormat;
@@ -650,6 +657,7 @@ pub enum DlssEvaluationPlanError {
     RenderExtentMismatch,
     InvalidColorDepthPair(DepthPairStatus),
     MotionVectorTextureMismatch,
+    MotionVectorsShaderResourceDenied,
     MultisampledInput,
     TextureArrayNotSupported,
     OutputIsNotLargerThanRender,
@@ -732,6 +740,10 @@ pub fn plan_dlss_evaluation(
     {
         return Err(DlssEvaluationPlanError::MotionVectorTextureMismatch);
     }
+    const DENY_SHADER_RESOURCE: u32 = 0x8;
+    if motion_vectors.flags & DENY_SHADER_RESOURCE != 0 {
+        return Err(DlssEvaluationPlanError::MotionVectorsShaderResourceDenied);
+    }
     if resolution.output_width <= resolution.render_width
         || resolution.output_height <= resolution.render_height
     {
@@ -805,7 +817,7 @@ pub fn plan_dlss_evaluation(
 #[cfg(test)]
 mod dlss_evaluation_plan_tests {
     use super::{
-        plan_dlss_evaluation, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
+        plan_dlss_evaluation, DepthPairStatus, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
         FrameInputs, MotionVectorDirection, MotionVectorUnits, ResolutionPlan,
         TextureInfo, TemporalFrameMetadata, TemporalHistoryResetReason as Reset, TemporalMetadataError,
         TemporalHistoryTracker as Tracker, ShaderReadTransitionError,
@@ -843,9 +855,9 @@ mod dlss_evaluation_plan_tests {
                 motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
                 previous_frame_valid: true,
             },
-            color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
-            depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
-            motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
+            color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
+            depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
+            motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
             depth_view_format: 40,
             depth_view_dimension: 3,
             color_resource_id: 0x100,
@@ -912,6 +924,27 @@ mod dlss_evaluation_plan_tests {
         let mut inputs = valid_inputs();
         inputs.motion_vectors_texture.samples = 2;
         assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
+    }
+
+    #[test]
+    fn resources_that_deny_shader_resource_views_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.color_texture.flags = 0x8;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(DepthPairStatus::ShaderResourceDenied))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.depth_texture.flags = 0x8;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(DepthPairStatus::ShaderResourceDenied))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.flags = 0x8;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorsShaderResourceDenied));
     }
 
     #[test]
@@ -1256,9 +1289,11 @@ mod tests {
     }
     #[test]
     fn depth_pair_validation_rejects_mismatched_or_untyped_inputs() {
-        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3, array_size: 1 };
+        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3, array_size: 1, flags: 0 };
         let depth = color;
         assert_eq!(validate_depth_pair(color, depth, 40, 3), DepthPairStatus::Compatible);
+        assert_eq!(validate_depth_pair(TextureInfo { flags: 0x8, ..color }, depth, 40, 3), DepthPairStatus::ShaderResourceDenied);
+        assert_eq!(validate_depth_pair(color, TextureInfo { flags: 0x8, ..depth }, 40, 3), DepthPairStatus::ShaderResourceDenied);
         assert_eq!(validate_depth_pair(color, TextureInfo { width: 1280, ..depth }, 40, 3), DepthPairStatus::ExtentMismatch);
         assert_eq!(validate_depth_pair(color, TextureInfo { samples: 4, ..depth }, 40, 3), DepthPairStatus::SampleCountMismatch);
         assert_eq!(validate_depth_pair(color, depth, 39, 3), DepthPairStatus::UnsupportedDepthFormat);
