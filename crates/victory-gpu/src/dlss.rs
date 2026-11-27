@@ -146,7 +146,6 @@ pub const fn classify_host_resource_state(state: u32) -> HostResourceStateClass 
     const DEPTH_READ: u32 = 0x20;
     const NON_PIXEL_SHADER_RESOURCE: u32 = 0x40;
     const PIXEL_SHADER_RESOURCE: u32 = 0x80;
-    const STREAM_OUT: u32 = 0x100;
     const INDIRECT_ARGUMENT: u32 = 0x200;
     const COPY_DEST: u32 = 0x400;
     const COPY_SOURCE: u32 = 0x800;
@@ -177,7 +176,6 @@ pub const fn classify_host_resource_state(state: u32) -> HostResourceStateClass 
         HostResourceStateClass::OtherReadOnly
     } else {
         // Includes write/read mixtures and state bits not covered above.
-        let _ = STREAM_OUT;
         HostResourceStateClass::Unknown
     }
 }
