@@ -9,7 +9,7 @@ This fork is being evaluated and adapted for NVIDIA GeForce RTX 5060 (8 GB VRAM)
 
 The existing RX 7900 XTX measurements below are reference results from the AMD development machine, not RTX 5060 results. The only reported NVIDIA run in the inherited baseline is an RTX 3090 run at roughly 0.53–0.55 seconds per frame, so it is evidence of partial NVIDIA execution, not evidence that the RTX 5060 works well.
 
-The adaptation will prioritize: correct NVIDIA adapter selection and capability reporting; shader-model/mesh-shader compatibility; VRAM-budget-aware resource residency for an 8 GB card; and reproducible Windows builds and tests. GPU runtime performance must be measured on a real RTX 5060 before any performance claim is made.
+The adaptation will prioritize: correct NVIDIA adapter selection and capability reporting; shader-model/mesh-shader compatibility; VRAM-budget-aware resource residency for an 8 GB card; and reproducible Windows builds and tests. GPU runtime performance must be measured on a real RTX 5060 before any performance claim is made. Deterministic unit tests now cover the existing VRAM-retention thresholds at an 8 GB budget; the policy itself has not been tuned without hardware measurements. These tests still need to run in Windows CI.
 
 ## The goal
 
