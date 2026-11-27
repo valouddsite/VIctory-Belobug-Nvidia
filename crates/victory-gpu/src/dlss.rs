@@ -354,6 +354,38 @@ mod candidate_registry_tests {
     }
 }
 
+/// True only when no title submissions are waiting to start and every host
+/// submission that has started has completed. This is a conservative safety
+/// gate, not proof that a particular candidate was produced by a particular
+/// command list.
+pub(crate) const fn submissions_quiescent(queued: u64, started: u64, finished: u64) -> bool {
+    queued == 0 && started == finished
+}
+
+/// Report once when a candidate is discarded because GPU work is still pending.
+#[cfg(windows)]
+pub(crate) fn report_present_candidate_not_quiescent() {
+    static REPORTED: OnceLock<()> = OnceLock::new();
+    REPORTED.get_or_init(|| {
+        tracing::warn!(
+            "DLSS preflight: discarded the presented depth candidate because host GPU submissions were still queued or in flight"
+        );
+    });
+}
+
+#[cfg(test)]
+mod submission_quiescence_tests {
+    use super::submissions_quiescent;
+
+    #[test]
+    fn quiescence_requires_no_queued_or_in_flight_submissions() {
+        assert!(submissions_quiescent(0, 12, 12));
+        assert!(!submissions_quiescent(1, 12, 12));
+        assert!(!submissions_quiescent(0, 12, 11));
+        assert!(!submissions_quiescent(2, 12, 10));
+    }
+}
+
 /// Current backend state. DLSS stays unavailable until Streamline is linked,
 /// initialized, and fed by the real renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
