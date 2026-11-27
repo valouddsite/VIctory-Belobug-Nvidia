@@ -1198,6 +1198,7 @@ impl State {
                             samples: color_desc.SampleDesc.Count,
                             dimension: color_desc.Dimension.0 as u32,
                             array_size: color_desc.DepthOrArraySize as u32,
+                            flags: color_desc.Flags.0 as u32,
                         },
                         crate::dlss::TextureInfo {
                             width: depth_desc.Width as u32,
@@ -1205,6 +1206,7 @@ impl State {
                             samples: depth_desc.SampleDesc.Count,
                             dimension: depth_desc.Dimension.0 as u32,
                             array_size: depth_desc.DepthOrArraySize as u32,
+                            flags: depth_desc.Flags.0 as u32,
                         },
                         depth_view.Format.0 as u32,
                         depth_view.ViewDimension.0 as u32,
@@ -1253,6 +1255,7 @@ impl State {
                         samples: color_desc.SampleDesc.Count,
                         dimension: color_desc.Dimension.0 as u32,
                             array_size: color_desc.DepthOrArraySize as u32,
+                            flags: color_desc.Flags.0 as u32,
                     },
                     crate::dlss::TextureInfo {
                         width: depth_desc.Width as u32,
@@ -1260,6 +1263,7 @@ impl State {
                         samples: depth_desc.SampleDesc.Count,
                         dimension: depth_desc.Dimension.0 as u32,
                             array_size: depth_desc.DepthOrArraySize as u32,
+                            flags: depth_desc.Flags.0 as u32,
                     },
                     view.Format.0 as u32,
                     view.ViewDimension.0 as u32,
