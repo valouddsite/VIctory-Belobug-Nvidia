@@ -844,8 +844,8 @@ mod dlss_evaluation_plan_tests {
                 previous_frame_valid: true,
             },
             color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
-            depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
-            motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
+            depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
+            motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
             depth_view_format: 40,
             depth_view_dimension: 3,
             color_resource_id: 0x100,
@@ -1256,7 +1256,7 @@ mod tests {
     }
     #[test]
     fn depth_pair_validation_rejects_mismatched_or_untyped_inputs() {
-        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3 };
+        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3, array_size: 1 };
         let depth = color;
         assert_eq!(validate_depth_pair(color, depth, 40, 3), DepthPairStatus::Compatible);
         assert_eq!(validate_depth_pair(color, TextureInfo { width: 1280, ..depth }, 40, 3), DepthPairStatus::ExtentMismatch);
