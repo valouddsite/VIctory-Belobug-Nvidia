@@ -16,6 +16,7 @@ That is a presentation path, not a DLSS integration. At this boundary the render
 - a CPU-only temporal history lifecycle tracker that invalidates continuity on first frame, render-extent changes, camera cuts, explicit resets and non-consecutive frame indices; it does not allocate, clear or validate GPU history textures;
 - a deterministic Halton(2,3) sub-pixel jitter sequence generator returning centered render-pixel offsets; projection-matrix application and matching Streamline constants remain unwired;
 - a `TemporalFramePlan` that advances history tracking and returns the same frame's render extent, Halton jitter, history-validity flag and reset reason as one CPU-side value; it does not apply projection jitter or create GPU history;
+- a strict resolved-input gate that rejects multisampled color, depth or motion-vector textures until the renderer supplies single-sample inputs; this prevents passing an MSAA render target directly into the future DLSS SR evaluation path;
 - a unified `plan_dlss_evaluation` gate that validates required input availability, render/output extents, exact frame-jitter and history consistency, non-aliased color/depth/motion-vector resource identities, and completed-submission shader-read transition proposals; it is still CPU-only and issues no barriers or Streamline calls;
 - a resolution-plan type with zero-size validation;
 - an explicit `NotIntegrated` backend state;
