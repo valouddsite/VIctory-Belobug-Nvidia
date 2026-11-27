@@ -1052,7 +1052,13 @@ fn create() -> windows::core::Result<Host> {
             victory_shader::emit::set_host_max_wave(o1.WaveLaneCountMax);
             // (RDNA has waves of 32 and 64, the vendor's older cards of 64 alone.)
             let amd = crate::indirect::amd(&device);
-            victory_shader::emit::set_host_rdna(amd && o1.WaveLaneCountMin == 32 && o1.WaveLaneCountMax == 64);
+            let rdna_translation = amd && o1.WaveLaneCountMin == 32 && o1.WaveLaneCountMax == 64;
+            victory_shader::emit::set_host_rdna(rdna_translation);
+            tracing::info!(
+                amd,
+                rdna_translation,
+                "host shader translation capabilities"
+            );
         }
         let messages = debug
             .then(|| device.cast::<ID3D12InfoQueue>().ok())
