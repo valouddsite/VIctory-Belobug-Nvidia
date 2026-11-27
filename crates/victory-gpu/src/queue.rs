@@ -1125,8 +1125,13 @@ fn show_planes(
     let Some(host) = crate::host::host() else {
         return;
     };
+    let (_, finished_submission) = crate::host::submissions();
     let depth_candidate = (what.resource != 0)
-        .then(|| crate::dlss::consume_present_depth_candidate(what.frame, what.resource))
+        .then(|| crate::dlss::consume_present_depth_candidate(
+            what.frame,
+            what.resource,
+            finished_submission,
+        ))
         .flatten();
     let _depth_candidate = if depth_candidate.is_some() && !gpu_submissions_quiescent() {
         crate::dlss::report_present_candidate_not_quiescent();
