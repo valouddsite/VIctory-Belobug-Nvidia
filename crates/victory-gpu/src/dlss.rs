@@ -115,6 +115,51 @@ pub struct TextureInfo {
     pub dimension: u32,
 }
 
+/// Conservative classification of the host-side D3D12 state tracker.
+/// This is diagnostic metadata only: it is not proof of queue ordering and
+/// never authorizes a DLSS evaluation or substitutes for a resource barrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostResourceStateClass {
+    Common,
+    ReadOnly,
+    RenderTarget,
+    DepthWrite,
+    UnorderedAccess,
+    CopySource,
+    CopyDestination,
+    Unknown,
+}
+
+/// Classify the raw D3D12 state bits tracked by HostTexture.
+/// Read-only states may be combined; write states are deliberately classified
+/// separately so future barrier planning cannot mistake them for shader inputs.
+pub const fn classify_host_resource_state(state: u32) -> HostResourceStateClass {
+    const RENDER_TARGET: u32 = 0x4;
+    const UNORDERED_ACCESS: u32 = 0x8;
+    const DEPTH_WRITE: u32 = 0x10;
+    const COPY_DEST: u32 = 0x400;
+    const COPY_SOURCE: u32 = 0x800;
+    const READ_ONLY: u32 = 0x1 | 0x2 | 0x20 | 0x40 | 0x80 | 0x200;
+
+    if state == 0 {
+        HostResourceStateClass::Common
+    } else if state == RENDER_TARGET {
+        HostResourceStateClass::RenderTarget
+    } else if state == DEPTH_WRITE {
+        HostResourceStateClass::DepthWrite
+    } else if state == UNORDERED_ACCESS {
+        HostResourceStateClass::UnorderedAccess
+    } else if state == COPY_SOURCE {
+        HostResourceStateClass::CopySource
+    } else if state == COPY_DEST {
+        HostResourceStateClass::CopyDestination
+    } else if state & !READ_ONLY == 0 {
+        HostResourceStateClass::ReadOnly
+    } else {
+        HostResourceStateClass::Unknown
+    }
+}
+
 /// Why a color/depth pair cannot be used for temporal reconstruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepthPairStatus {
@@ -358,6 +403,21 @@ pub(crate) fn consume_present_depth_candidate(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .consume_completed(frame, color_resource, finished_submission)?;
+    // Snapshot the existing host state tracker for diagnostics only. The
+    // values are not a proof of GPU visibility and do not trigger barriers.
+    use std::sync::atomic::Ordering;
+    let color_state = candidate.color.state.load(Ordering::Acquire);
+    let depth_state = candidate.depth.state.load(Ordering::Acquire);
+    static STATE_REPORTED: OnceLock<()> = OnceLock::new();
+    STATE_REPORTED.get_or_init(|| {
+        tracing::info!(
+            color_state,
+            depth_state,
+            color_class = ?classify_host_resource_state(color_state),
+            depth_class = ?classify_host_resource_state(depth_state),
+            "DLSS preflight: sampled tracked D3D12 states for the completed color/depth candidate; diagnostic only, no barriers or evaluation"
+        );
+    });
     static REPORTED: OnceLock<()> = OnceLock::new();
     REPORTED.get_or_init(|| {
         tracing::info!(
@@ -525,6 +585,19 @@ pub fn report_requested_but_unavailable() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_resource_state_classification_is_conservative() {
+        assert_eq!(classify_host_resource_state(0), HostResourceStateClass::Common);
+        assert_eq!(classify_host_resource_state(0x4), HostResourceStateClass::RenderTarget);
+        assert_eq!(classify_host_resource_state(0x10), HostResourceStateClass::DepthWrite);
+        assert_eq!(classify_host_resource_state(0x8), HostResourceStateClass::UnorderedAccess);
+        assert_eq!(classify_host_resource_state(0x800), HostResourceStateClass::CopySource);
+        assert_eq!(classify_host_resource_state(0x400), HostResourceStateClass::CopyDestination);
+        assert_eq!(classify_host_resource_state(0x40 | 0x80), HostResourceStateClass::ReadOnly);
+        assert_eq!(classify_host_resource_state(0x4 | 0x80), HostResourceStateClass::Unknown);
+        assert_eq!(classify_host_resource_state(0x1000), HostResourceStateClass::Unknown);
+    }
 
     #[test]
     fn quality_names_are_case_insensitive_and_invalid_values_are_rejected() {
