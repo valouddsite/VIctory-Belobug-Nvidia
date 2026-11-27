@@ -176,7 +176,7 @@ pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
 }
 
 #[cfg(windows)]
-struct PresentedDepthCandidate {
+pub(crate) struct PresentedDepthCandidate {
     color: std::sync::Arc<crate::resource::HostTexture>,
     depth: std::sync::Arc<crate::resource::HostTexture>,
 }
@@ -222,24 +222,25 @@ pub(crate) fn register_present_depth_candidate(
 /// Consume a candidate only when the exact guest color resource is presented
 /// in the same frame. The retained host resources are released afterwards.
 #[cfg(windows)]
-pub(crate) fn consume_present_depth_candidate(frame: u64, color_resource: usize) -> bool {
+pub(crate) fn consume_present_depth_candidate(
+    frame: u64,
+    color_resource: usize,
+) -> Option<PresentedDepthCandidate> {
     let Some(candidates) = PRESENT_DEPTH_CANDIDATES.get() else {
-        return false;
+        return None;
     };
     let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
     candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
     let Some(Some(candidate)) = candidates.remove(&(frame, color_resource)) else {
-        return false;
+        return None;
     };
-    // Keep both host resources alive through the presentation boundary.
-    let _keep_alive = (candidate.color, candidate.depth);
     static REPORTED: OnceLock<()> = OnceLock::new();
     REPORTED.get_or_init(|| {
         tracing::info!(
             "DLSS preflight: exact presented color resource matched an unambiguous depth resource recorded in the same frame"
         );
     });
-    true
+    Some(candidate)
 }
 
 /// Current backend state. DLSS stays unavailable until Streamline is linked,
