@@ -11430,7 +11430,7 @@ mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at 
     fn rtx_5060_eight_gib_vram_idle_thresholds_are_covered() {
         let gib = 1u64 << 30;
         let budget = 8 * gib;
-        let threshold = |percent: u64| (budget * percent + 99) / 100;
+        let threshold = |percent: u64| (budget * percent).div_ceil(100);
         let idle = |used| super::vram_idle_for(Some([budget, used, 0, 0]), true);
 
         // Below 68%, retain idle textures for longer.
