@@ -42,6 +42,11 @@ const RTV_RING: u32 = 1024;
 #[allow(dead_code)]
 pub(crate) struct DlssOutputTarget {
     pub(crate) resource: ID3D12Resource,
+    /// Shader-visible heap containing this target's typed Texture2D UAV.
+    /// Keep the heap alive for as long as the descriptor may be referenced.
+    pub(crate) uav_heap: ID3D12DescriptorHeap,
+    /// GPU descriptor handle for binding the output UAV on a command list.
+    pub(crate) uav_gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
     pub(crate) desc: crate::dlss::DlssOutputTargetDesc,
 }
 
@@ -9210,6 +9215,8 @@ impl Host {
                 let current = current.ok_or_else(windows::core::Error::empty)?;
                 Ok(DlssOutputTarget {
                     resource: current.resource.clone(),
+                    uav_heap: current.uav_heap.clone(),
+                    uav_gpu: current.uav_gpu,
                     desc: current.desc,
                 })
             }
@@ -9302,7 +9309,34 @@ impl Host {
             )?;
         }
         let resource = resource.ok_or_else(windows::core::Error::empty)?;
-        Ok(DlssOutputTarget { resource, desc })
+
+        // Give the output a real typed Texture2D UAV descriptor. The heap is
+        // shader-visible so a future DLSS/compute command list can bind it;
+        // it is deliberately owned by the target to keep the descriptor alive
+        // across reuse and in-flight submissions.
+        let uav_heap: ID3D12DescriptorHeap = unsafe {
+            self.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                NumDescriptors: 1,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                NodeMask: 0,
+            })?
+        };
+        let uav_cpu = unsafe { uav_heap.GetCPUDescriptorHandleForHeapStart() };
+        let uav_gpu = unsafe { uav_heap.GetGPUDescriptorHandleForHeapStart() };
+        // SAFETY: the resource is a single-sample 2D texture with ALLOW_UNORDERED_ACCESS,
+        // and the selected format passed the typed-UAV capability check above.
+        unsafe {
+            self.device
+                .CreateUnorderedAccessView(&resource, None, None, uav_cpu);
+        }
+
+        Ok(DlssOutputTarget {
+            resource,
+            uav_heap,
+            uav_gpu,
+            desc,
+        })
     }
 
     pub(crate) fn upload_buffer(&self, size: u64) -> Option<(ID3D12Resource, *mut u8)> {
