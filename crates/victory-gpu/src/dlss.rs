@@ -104,6 +104,58 @@ impl ResolutionPlan {
     }
 }
 
+
+/// Minimal resource metadata used to reject incompatible color/depth pairs
+/// before a future temporal upscaler can consume them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureInfo {
+    pub width: u32,
+    pub height: u32,
+    pub samples: u32,
+    pub dimension: u32,
+}
+
+/// Why a color/depth pair cannot be used for temporal reconstruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepthPairStatus {
+    Compatible,
+    MissingExtent,
+    NotTexture2D,
+    ExtentMismatch,
+    SampleCountMismatch,
+    UnsupportedDepthFormat,
+}
+
+/// Validate a scene-color texture against its bound depth view.
+/// D3D12 texture2D dimension and DSV texture2D dimension are both 3.
+pub fn validate_depth_pair(
+    color: TextureInfo,
+    depth: TextureInfo,
+    depth_view_format: u32,
+    depth_view_dimension: u32,
+) -> DepthPairStatus {
+    const TEXTURE2D: u32 = 3;
+    const DEPTH_FORMATS: [u32; 4] = [20, 40, 45, 55];
+    if color.width == 0 || color.height == 0 || depth.width == 0 || depth.height == 0
+        || color.samples == 0 || depth.samples == 0
+    {
+        return DepthPairStatus::MissingExtent;
+    }
+    if color.dimension != TEXTURE2D || depth.dimension != TEXTURE2D || depth_view_dimension != TEXTURE2D {
+        return DepthPairStatus::NotTexture2D;
+    }
+    if color.width != depth.width || color.height != depth.height {
+        return DepthPairStatus::ExtentMismatch;
+    }
+    if color.samples != depth.samples {
+        return DepthPairStatus::SampleCountMismatch;
+    }
+    if !DEPTH_FORMATS.contains(&depth_view_format) {
+        return DepthPairStatus::UnsupportedDepthFormat;
+    }
+    DepthPairStatus::Compatible
+}
+
 /// Current backend state. DLSS stays unavailable until Streamline is linked,
 /// initialized, and fed by the real renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,4 +247,16 @@ mod tests {
     fn backend_is_never_misreported_as_active() {
         assert_eq!(backend_state(), BackendState::NotIntegrated);
     }
+    #[test]
+    fn depth_pair_validation_rejects_mismatched_or_untyped_inputs() {
+        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3 };
+        let depth = color;
+        assert_eq!(validate_depth_pair(color, depth, 40, 3), DepthPairStatus::Compatible);
+        assert_eq!(validate_depth_pair(color, TextureInfo { width: 1280, ..depth }, 40, 3), DepthPairStatus::ExtentMismatch);
+        assert_eq!(validate_depth_pair(color, TextureInfo { samples: 4, ..depth }, 40, 3), DepthPairStatus::SampleCountMismatch);
+        assert_eq!(validate_depth_pair(color, depth, 39, 3), DepthPairStatus::UnsupportedDepthFormat);
+        assert_eq!(validate_depth_pair(color, depth, 40, 4), DepthPairStatus::NotTexture2D);
+        assert_eq!(validate_depth_pair(color, TextureInfo { width: 0, ..depth }, 40, 3), DepthPairStatus::MissingExtent);
+    }
+
 }
