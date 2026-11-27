@@ -292,7 +292,7 @@ impl Job {
 
 /// The jobs' copies have run.
 fn finish(jobs: &[Arc<Job>]) {
-    for job in &jobs {
+    for job in jobs {
         job.staging.uploaded.store(true, Relaxed);
         job.staging.dirty.store(false, Relaxed);
         job.staging.note_held();
@@ -301,12 +301,12 @@ fn finish(jobs: &[Arc<Job>]) {
     }
     {
         let mut way = ON_THEIR_WAY.lock().unwrap_or_else(|e| e.into_inner());
-        for job in &jobs {
+        for job in jobs {
             way.remove(&job.copy.serial);
         }
         LANDED.notify_all();
     }
-    for job in &jobs {
+    for job in jobs {
         let us = job.asked.elapsed().as_micros() as u64;
         let n = STATS[0].fetch_add(1, Relaxed) + 1;
         let bytes = STATS[1].fetch_add(job.staging.read as u64, Relaxed) + job.staging.read as u64;
