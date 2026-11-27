@@ -211,6 +211,27 @@ impl DlssDescriptorTableLayout {
     pub const fn slot(self, slot: DlssDescriptorSlot) -> u32 {
         slot as u32
     }
+
+    /// Byte offset of a descriptor from the heap's CPU/GPU start handle.
+    ///
+    /// The caller supplies the device-specific descriptor increment returned
+    /// by D3D12. None means the increment is zero or multiplication overflowed.
+    /// This does not create a heap or prove that the heap contains the slot.
+    pub const fn byte_offset(
+        self,
+        slot: DlssDescriptorSlot,
+        descriptor_increment: u32,
+    ) -> Option<u32> {
+        if descriptor_increment == 0 {
+            return None;
+        }
+        (slot as u32).checked_mul(descriptor_increment)
+    }
+
+    /// Whether a descriptor index belongs to this four-entry table.
+    pub const fn contains(self, descriptor_index: u32) -> bool {
+        descriptor_index < Self::DESCRIPTOR_COUNT
+    }
 }
 
 /// Pixel format for a dedicated DLSS output texture.
@@ -2354,6 +2375,32 @@ mod descriptor_layout_tests {
         assert_eq!(layout.slot(DlssDescriptorSlot::Depth), 1);
         assert_eq!(layout.slot(DlssDescriptorSlot::MotionVectors), 2);
         assert_eq!(layout.slot(DlssDescriptorSlot::Output), 3);
+    }
+
+    #[test]
+    fn descriptor_byte_offsets_use_device_increment() {
+        let layout = DlssDescriptorTableLayout;
+        assert_eq!(layout.byte_offset(DlssDescriptorSlot::SceneColor, 32), Some(0));
+        assert_eq!(layout.byte_offset(DlssDescriptorSlot::Depth, 32), Some(32));
+        assert_eq!(layout.byte_offset(DlssDescriptorSlot::MotionVectors, 32), Some(64));
+        assert_eq!(layout.byte_offset(DlssDescriptorSlot::Output, 32), Some(96));
+    }
+
+    #[test]
+    fn descriptor_byte_offsets_reject_zero_increment() {
+        assert_eq!(
+            DlssDescriptorTableLayout.byte_offset(DlssDescriptorSlot::Output, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn descriptor_layout_checks_slot_bounds() {
+        let layout = DlssDescriptorTableLayout;
+        assert!(layout.contains(0));
+        assert!(layout.contains(3));
+        assert!(!layout.contains(4));
+        assert!(!layout.contains(u32::MAX));
     }
 
     #[test]
