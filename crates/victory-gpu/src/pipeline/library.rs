@@ -988,6 +988,58 @@ mod tests {
     }
 
     #[test]
+    fn early_pipeline_tracking_spreads_keys_and_deduplicates() {
+        let used = UsedPipelines::empty();
+        let keys: Vec<String> = (0..4096u32)
+            .map(|i| name("graphics", &i.to_le_bytes(), &[b"vs"], "state"))
+            .collect();
+        let shards: HashSet<_> = keys
+            .iter()
+            .map(|key| load_lock_index(key) % USED_SHARDS)
+            .collect();
+        assert_eq!(USED_SHARDS, 64);
+        assert!(
+            shards.len() >= 60,
+            "only {} of 64 early-pipeline shards were used",
+            shards.len()
+        );
+
+        for key in &keys {
+            assert!(used.insert(key));
+            assert!(used.contains(key));
+            assert!(!used.insert(key), "duplicate key should not be inserted twice");
+        }
+        assert_eq!(used.len.load(Ordering::Relaxed), keys.len());
+        assert_eq!(used.snapshot().len(), keys.len());
+    }
+
+    #[test]
+    fn early_pipeline_tracking_keeps_concurrent_inserts() {
+        let used = std::sync::Arc::new(UsedPipelines::empty());
+        let workers: Vec<_> = (0..8u32)
+            .map(|worker| {
+                let used = used.clone();
+                std::thread::spawn(move || {
+                    for item in 0..512u32 {
+                        let key = name(
+                            "compute",
+                            &[worker.to_le_bytes().as_slice(), item.to_le_bytes().as_slice()].concat(),
+                            &[b"cs"],
+                            "state",
+                        );
+                        assert!(used.insert(&key));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(used.len.load(Ordering::Relaxed), 8 * 512);
+        assert_eq!(used.snapshot().len(), 8 * 512);
+    }
+
+    #[test]
     fn names_change_with_what_goes_into_the_pipeline() {
         let a = name("graphics", b"root", &[b"vs", b"ps"], "state");
         assert_eq!(a, name("graphics", b"root", &[b"vs", b"ps"], "state"));
