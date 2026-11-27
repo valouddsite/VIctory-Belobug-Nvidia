@@ -291,12 +291,22 @@ fn call(what: &'static str, name: &str) -> Call {
     Call { shard, thread, since }
 }
 
+/// Removes one completed call without shifting every later entry.
+fn remove_active_call(calls: &mut Vec<ActiveCall>, thread: u32, since: u64) {
+    if let Some(index) = calls.iter().position(|c| (c.0, c.3) == (thread, since)) {
+        // The report does not depend on call order; swap_remove avoids the
+        // linear tail shift performed by Vec::retain for this one removal.
+        calls.swap_remove(index);
+    }
+}
+
 impl Drop for Call {
     fn drop(&mut self) {
-        CALLS[self.shard]
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|c| (c.0, c.3) != (self.thread, self.since));
+        remove_active_call(
+            &mut CALLS[self.shard].lock().unwrap_or_else(|e| e.into_inner()),
+            self.thread,
+            self.since,
+        );
     }
 }
 
@@ -853,6 +863,24 @@ mod tests {
             CALL_SHARDS,
             "sequential worker IDs should cover every diagnostics shard"
         );
+    }
+
+    #[test]
+    fn completed_pipeline_call_removal_does_not_shift_remaining_entries() {
+        let mut calls = vec![
+            (10, "load", "first".to_owned(), 100),
+            (20, "make", "second".to_owned(), 200),
+            (30, "store", "third".to_owned(), 300),
+        ];
+
+        remove_active_call(&mut calls, 20, 200);
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().any(|c| (c.0, c.3) == (10, 100)));
+        assert!(calls.iter().any(|c| (c.0, c.3) == (30, 300)));
+
+        // A duplicate or stale completion is harmless.
+        remove_active_call(&mut calls, 20, 200);
+        assert_eq!(calls.len(), 2);
     }
 
     #[test]
