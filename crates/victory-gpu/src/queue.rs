@@ -901,6 +901,11 @@ fn system_timestamp() -> u64 {
 /// Frames presented so far.
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 
+/// The frame currently being recorded, whose next Present increments FRAMES.
+pub(crate) fn upcoming_frame() -> u64 {
+    FRAMES.load(Ordering::Relaxed) + 1
+}
+
 #[cfg(feature = "diagnostics")]
 pub(crate) fn presented() -> u64 {
     FRAMES.load(Ordering::Relaxed)
@@ -1110,6 +1115,9 @@ fn show_planes(
     let Some(host) = crate::host::host() else {
         return;
     };
+    if what.resource != 0 {
+        let _ = crate::dlss::consume_present_depth_candidate(what.frame, what.resource);
+    }
     let shown = host.present_planes(texture, state, overlay, what.frame);
     #[cfg(feature = "diagnostics")]
     blinks(what.frame, what.resource as This, state, shown);
