@@ -199,7 +199,7 @@ fn main() -> Result<()> {
     if victory_hle::modules::audio::capture::child() {
         return Ok(());
     }
-    // Load the app-supplied D3D12 Agility SDK (Windows 10) before any device exists.
+    //cargo update --workspace Load the app-supplied D3D12 Agility SDK (Windows 10) before any device exists.
     #[cfg(windows)]
     victory_gpu::agility::prepare();
     let cli = Cli::parse();
