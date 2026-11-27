@@ -186,6 +186,33 @@ impl ResolutionPlan {
 }
 
 
+/// Stable slots in the future shared shader-visible DLSS descriptor table.
+///
+/// D3D12 permits only one CBV/SRV/UAV heap to be bound at a time. Keeping the
+/// three input SRVs and output UAV in one table avoids replacing the input
+/// heap when the output heap is bound. This is a layout contract only: it
+/// creates no descriptors and does not prove resource states or lifetimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum DlssDescriptorSlot {
+    SceneColor = 0,
+    Depth = 1,
+    MotionVectors = 2,
+    Output = 3,
+}
+
+/// Fixed descriptor-table layout for one DLSS evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssDescriptorTableLayout;
+
+impl DlssDescriptorTableLayout {
+    pub const DESCRIPTOR_COUNT: u32 = 4;
+
+    pub const fn slot(self, slot: DlssDescriptorSlot) -> u32 {
+        slot as u32
+    }
+}
+
 /// Pixel format for a dedicated DLSS output texture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DlssOutputFormat {
@@ -2311,5 +2338,35 @@ mod dlss_output_allocation_policy_tests {
         let plan = Plan::new(Some(current), requested, Some(required)).unwrap();
         assert_eq!(plan.action, Action::AllocateNew);
         assert_eq!(plan.estimated_required_bytes, required);
+    }
+}
+
+
+#[cfg(test)]
+mod descriptor_layout_tests {
+    use super::{DlssDescriptorSlot, DlssDescriptorTableLayout};
+
+    #[test]
+    fn descriptor_table_has_one_slot_per_required_resource() {
+        let layout = DlssDescriptorTableLayout;
+        assert_eq!(DlssDescriptorTableLayout::DESCRIPTOR_COUNT, 4);
+        assert_eq!(layout.slot(DlssDescriptorSlot::SceneColor), 0);
+        assert_eq!(layout.slot(DlssDescriptorSlot::Depth), 1);
+        assert_eq!(layout.slot(DlssDescriptorSlot::MotionVectors), 2);
+        assert_eq!(layout.slot(DlssDescriptorSlot::Output), 3);
+    }
+
+    #[test]
+    fn descriptor_slots_are_unique_and_contiguous() {
+        let layout = DlssDescriptorTableLayout;
+        let slots = [
+            layout.slot(DlssDescriptorSlot::SceneColor),
+            layout.slot(DlssDescriptorSlot::Depth),
+            layout.slot(DlssDescriptorSlot::MotionVectors),
+            layout.slot(DlssDescriptorSlot::Output),
+        ];
+        let mut sorted = slots;
+        sorted.sort_unstable();
+        assert_eq!(sorted, [0, 1, 2, 3]);
     }
 }
