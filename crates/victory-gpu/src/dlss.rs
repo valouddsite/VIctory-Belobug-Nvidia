@@ -175,6 +175,73 @@ pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
     }
 }
 
+#[cfg(windows)]
+struct PresentedDepthCandidate {
+    color: std::sync::Arc<crate::resource::HostTexture>,
+    depth: std::sync::Arc<crate::resource::HostTexture>,
+}
+
+#[cfg(windows)]
+static PRESENT_DEPTH_CANDIDATES: OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(u64, usize), Option<PresentedDepthCandidate>>>,
+> = OnceLock::new();
+
+/// Retain an exact color/depth pair for the frame that is about to be presented.
+/// A color target paired with multiple different depth resources is marked
+/// ambiguous and will not be exposed as a temporal input.
+#[cfg(windows)]
+pub(crate) fn register_present_depth_candidate(
+    frame: u64,
+    color_resource: usize,
+    color: std::sync::Arc<crate::resource::HostTexture>,
+    depth: std::sync::Arc<crate::resource::HostTexture>,
+) {
+    if color_resource == 0 {
+        return;
+    }
+    let candidates = PRESENT_DEPTH_CANDIDATES.get_or_init(Default::default);
+    let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
+    candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
+    let key = (frame, color_resource);
+    match candidates.entry(key) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(Some(PresentedDepthCandidate { color, depth }));
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            let same_pair = entry.get().as_ref().is_some_and(|existing| {
+                std::sync::Arc::ptr_eq(&existing.color, &color)
+                    && std::sync::Arc::ptr_eq(&existing.depth, &depth)
+            });
+            if !same_pair {
+                entry.insert(None);
+            }
+        }
+    }
+}
+
+/// Consume a candidate only when the exact guest color resource is presented
+/// in the same frame. The retained host resources are released afterwards.
+#[cfg(windows)]
+pub(crate) fn consume_present_depth_candidate(frame: u64, color_resource: usize) -> bool {
+    let Some(candidates) = PRESENT_DEPTH_CANDIDATES.get() else {
+        return false;
+    };
+    let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
+    candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
+    let Some(Some(candidate)) = candidates.remove(&(frame, color_resource)) else {
+        return false;
+    };
+    // Keep both host resources alive through the presentation boundary.
+    let _keep_alive = (candidate.color, candidate.depth);
+    static REPORTED: OnceLock<()> = OnceLock::new();
+    REPORTED.get_or_init(|| {
+        tracing::info!(
+            "DLSS preflight: exact presented color resource matched an unambiguous depth resource recorded in the same frame"
+        );
+    });
+    true
+}
+
 /// Current backend state. DLSS stays unavailable until Streamline is linked,
 /// initialized, and fed by the real renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
