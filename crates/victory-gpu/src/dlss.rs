@@ -1094,10 +1094,7 @@ impl TemporalHistoryTracker {
             Some((_, width, height)) if width != render_width || height != render_height => {
                 Some(TemporalHistoryResetReason::RenderExtentChanged)
             }
-            Some((previous_index, _, _)) if camera_cut => {
-                let _ = previous_index;
-                Some(TemporalHistoryResetReason::CameraCut)
-            }
+            Some(_) if camera_cut => Some(TemporalHistoryResetReason::CameraCut),
             Some((_, _, _)) if explicit_reset => {
                 Some(TemporalHistoryResetReason::ExplicitReset)
             }
