@@ -11430,14 +11430,18 @@ mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at 
     fn rtx_5060_eight_gib_vram_idle_thresholds_are_covered() {
         let gib = 1u64 << 30;
         let budget = 8 * gib;
+        let threshold = |percent: u64| (budget * percent + 99) / 100;
         let idle = |used| super::vram_idle_for(Some([budget, used, 0, 0]), true);
 
-        // Just below 75%, texture copies can remain cached for longer.
-        assert_eq!(idle(6 * gib - 1), 600_000);
-        // At 75%, start trimming idle resources.
-        assert_eq!(idle(6 * gib), 2_500);
+        // Below 68%, retain idle textures for longer.
+        assert_eq!(idle(threshold(68) - 1), 600_000);
+        // From 68% through 74%, use the intermediate retention period.
+        assert_eq!(idle(threshold(68)), 30_000);
+        assert_eq!(idle(threshold(75) - 1), 30_000);
+        // At 75%, begin trimming idle resources.
+        assert_eq!(idle(threshold(75)), 2_500);
         // At 85%, use the shortest safe idle timeout.
-        assert_eq!(idle((budget / 100) * 85), 1_000);
+        assert_eq!(idle(threshold(85)), 1_000);
         // Over-budget reports must stay in the high-pressure path.
         assert_eq!(idle(9 * gib), 1_000);
     }
