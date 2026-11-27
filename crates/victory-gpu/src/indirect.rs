@@ -276,9 +276,17 @@ fn make_for(device: &ID3D12Device) -> windows::core::Result<Clamp> {
 /// is asked (its dispatch counts are 32 bits), and so does an AMD card, whose
 /// dispatch packets and group numbers are the same; D3D12 does not look at
 /// indirect counts. Other cards stay at 65,535.
+fn wide_dispatch_limit(amd: bool, enabled: bool) -> u32 {
+    if amd && enabled { 1 << 20 } else { 65_535 }
+}
+
 fn widest(amd: bool) -> u32 {
     let on = std::env::var_os("VICTORY_INDIRECT_WIDE").is_none_or(|v| v != "0");
-    if amd && on { 1 << 20 } else { 65_535 }
+    wide_dispatch_limit(amd, on)
+}
+
+fn is_amd_vendor(vendor_id: u32) -> bool {
+    vendor_id == 0x1002
 }
 
 /// Whether `device` is an AMD card's.
@@ -289,7 +297,7 @@ pub(crate) fn amd(device: &ID3D12Device) -> bool {
         CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
             .and_then(|f| f.EnumAdapterByLuid::<IDXGIAdapter1>(device.GetAdapterLuid()))
             .and_then(|a| a.GetDesc1())
-            .is_ok_and(|d| d.VendorId == 0x1002)
+            .is_ok_and(|d| is_amd_vendor(d.VendorId))
     }
 }
 
@@ -630,6 +638,21 @@ fn uav_barrier() -> D3D12_RESOURCE_BARRIER {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn wide_indirect_dispatch_is_limited_to_amd_when_enabled() {
+        assert_eq!(wide_dispatch_limit(true, true), 1 << 20);
+        assert_eq!(wide_dispatch_limit(false, true), 65_535);
+        assert_eq!(wide_dispatch_limit(true, false), 65_535);
+        assert_eq!(wide_dispatch_limit(false, false), 65_535);
+    }
+
+    #[test]
+    fn only_amd_vendor_id_is_classified_as_amd() {
+        assert!(is_amd_vendor(0x1002));
+        assert!(!is_amd_vendor(0x10de)); // NVIDIA
+        assert!(!is_amd_vendor(0x8086)); // Intel
+    }
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0;
     use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
