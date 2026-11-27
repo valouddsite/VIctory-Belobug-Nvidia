@@ -146,7 +146,7 @@ pub fn prepare() {
         State::Loaded { version, dir, .. } => {
             tracing::info!("D3D12: Agility SDK v{version} ({})", dir.display());
         }
-        State::NotFound => tracing::info!(
+        State::NotFound => tracing::debug!(
             "D3D12: no Agility SDK folder; inbox D3D12 (Shader Model 6.5 on Windows 10, no mesh shaders)"
         ),
         State::Unavailable(reason) => {
