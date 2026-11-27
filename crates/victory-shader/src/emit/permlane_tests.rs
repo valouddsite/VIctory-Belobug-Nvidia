@@ -118,6 +118,44 @@ fn lowered(native: &NativeProgram, host_wave: u32) -> Result<HostShader, ShaderE
     Ok(shader)
 }
 
+
+/// Return the wave size selected by the translator without requiring a D3D12 device.
+fn translated_wave_size(native: &NativeProgram, host_wave: u32) -> Result<Option<u32>, ShaderError> {
+    let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir");
+    let st = structure::structure(&p).expect("structure");
+    let res = resource::track(&p, &native.layout, native.stage, Some(&st)).expect("resources");
+    let io = io::raise(&p, native).expect("io");
+    let was = lower::TEST_HOST_WAVE.replace(Some(host_wave));
+    let result = lower::lower(&lower::Parts {
+        native,
+        p: &p,
+        st: &st,
+        io: &io,
+        res: &res,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        prims: Vec::new(),
+        mesh_stride: 0,
+    });
+    lower::TEST_HOST_WAVE.set(was);
+    result.map(|lowered| lowered.wave_size)
+}
+
+/// Both v_permlane16 and v_permlanex16 select within 32-lane halves.
+/// A console wave64 shader using either operation must therefore remain
+/// translatable to a host whose maximum wave size is 32 (e.g. NVIDIA).
+#[test]
+fn wave64_permlane_operations_do_not_require_host_wave64() {
+    for cross in [false, true] {
+        let program = native(cross, false, false, false, true);
+        assert_eq!(
+            translated_wave_size(&program, 32).expect("lower permlane shader"),
+            Some(32),
+            "cross-half selector flag: {cross}"
+        );
+    }
+}
+
 #[test]
 fn permlane_fetch_inactive_outside_the_host_branch_is_rejected() {
     let mut native = native(true, true, false, false, false);
