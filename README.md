@@ -148,6 +148,24 @@ Commands, debugging switches and upstream's own description:
 [docs/README-fxceless.md](docs/README-fxceless.md). Every `VICTORY_...` switch is
 described in a comment where it is read.
 
+## Windows RTX 5060 test package
+
+An experimental Windows x64 package can be built by the **Windows test package**
+workflow. After that workflow is merged into the repository's default branch,
+open **Actions → Windows test package → Run workflow**, wait for completion,
+then download the `VIctory-RTX5060-Windows-x64` artifact. The ZIP contains
+`victory.exe`, the example configuration, the PowerShell launcher and a
+local-test guide. Artifacts are retained for 14 days.
+
+Start with a copy of `victory.example.toml`, set your own game-data path, then
+run `scripts\play.ps1 -Exe <your-game-executable> -Build release`. If needed,
+retry with `-Safe`. Full setup and reporting instructions are in
+[docs/rtx-5060-test-release.md](docs/rtx-5060-test-release.md).
+
+This is an **experimental test build**, not a stable or hardware-validated
+RTX 5060 release. Automated Windows CI does not prove real rendering,
+stability, 8 GB VRAM sufficiency or frame rate on your PC.
+
 ## What is different here
 
 In short; the reasons and the measurements are in [docs/findings.md](docs/findings.md).
