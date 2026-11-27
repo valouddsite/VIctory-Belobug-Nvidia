@@ -611,6 +611,307 @@ pub fn plan_shader_read_transition(
     })
 }
 
+/// All CPU-side evidence required before a future Streamline DLSS SR call.
+///
+/// The resource identifiers and state values must come from the exact completed
+/// guest frame. This function only validates and assembles transition
+/// proposals; it does not record barriers, prove cross-queue ownership, tag
+/// Streamline resources or evaluate DLSS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DlssEvaluationInputs {
+    pub frame: TemporalFramePlan,
+    pub resolution: ResolutionPlan,
+    pub available_inputs: FrameInputs,
+    pub temporal_metadata: TemporalFrameMetadata,
+    pub color_resource_id: usize,
+    pub depth_resource_id: usize,
+    pub motion_vectors_resource_id: usize,
+    pub recording_list: usize,
+    pub expected_recording_list: usize,
+    pub submission: u64,
+    pub finished_submission: u64,
+    pub color_before_state: u32,
+    pub depth_before_state: u32,
+    pub motion_vectors_before_state: u32,
+}
+
+/// Why a future DLSS evaluation cannot be prepared from this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssEvaluationPlanError {
+    MissingRequiredInputs,
+    RenderExtentMismatch,
+    OutputIsNotLargerThanRender,
+    JitterDoesNotMatchFrame,
+    TemporalHistoryUnavailable,
+    AliasedResources,
+    InvalidTemporalMetadata(TemporalMetadataError),
+    InvalidResourceTransition(ShaderReadTransitionError),
+}
+
+/// Validated CPU-side input and transition proposal for one DLSS frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DlssEvaluationPlan {
+    pub frame_index: u64,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub jitter: TemporalJitter,
+    pub reset_history: bool,
+    pub color_transition: ShaderReadTransitionPlan,
+    pub depth_transition: ShaderReadTransitionPlan,
+    pub motion_vectors_transition: ShaderReadTransitionPlan,
+}
+
+/// Assemble a conservative evaluation plan for a single completed frame.
+///
+/// The first frame after a reset is deliberately rejected until valid history
+/// is available. A later Streamline integration can use the reset signal and
+/// initialize history resources explicitly rather than guessing.
+pub fn plan_dlss_evaluation(
+    inputs: DlssEvaluationInputs,
+) -> Result<DlssEvaluationPlan, DlssEvaluationPlanError> {
+    if !inputs.available_inputs.ready() {
+        return Err(DlssEvaluationPlanError::MissingRequiredInputs);
+    }
+
+    let frame = inputs.frame;
+    let resolution = inputs.resolution;
+    let metadata = inputs.temporal_metadata;
+
+    if resolution.render_width != frame.render_width
+        || resolution.render_height != frame.render_height
+        || metadata.render_width != frame.render_width
+        || metadata.render_height != frame.render_height
+    {
+        return Err(DlssEvaluationPlanError::RenderExtentMismatch);
+    }
+    if resolution.output_width <= resolution.render_width
+        || resolution.output_height <= resolution.render_height
+    {
+        return Err(DlssEvaluationPlanError::OutputIsNotLargerThanRender);
+    }
+    if metadata.jitter_x_pixels != frame.jitter.x_pixels
+        || metadata.jitter_y_pixels != frame.jitter.y_pixels
+    {
+        return Err(DlssEvaluationPlanError::JitterDoesNotMatchFrame);
+    }
+    if !frame.previous_frame_valid || !metadata.previous_frame_valid || frame.reset_reason.is_some() {
+        return Err(DlssEvaluationPlanError::TemporalHistoryUnavailable);
+    }
+    validate_temporal_frame_metadata(metadata)
+        .map_err(DlssEvaluationPlanError::InvalidTemporalMetadata)?;
+
+    let resources = [
+        inputs.color_resource_id,
+        inputs.depth_resource_id,
+        inputs.motion_vectors_resource_id,
+    ];
+    if resources.contains(&0)
+        || resources[0] == resources[1]
+        || resources[0] == resources[2]
+        || resources[1] == resources[2]
+    {
+        return Err(DlssEvaluationPlanError::AliasedResources);
+    }
+
+    const SHADER_READ: u32 = 0xC0;
+    const DEPTH_SHADER_READ: u32 = 0xE0;
+    let transition = |resource_id, before_state, after_state| {
+        plan_shader_read_transition(
+            resource_id,
+            inputs.recording_list,
+            inputs.expected_recording_list,
+            inputs.submission,
+            inputs.finished_submission,
+            before_state,
+            after_state,
+        )
+        .map_err(DlssEvaluationPlanError::InvalidResourceTransition)
+    };
+
+    Ok(DlssEvaluationPlan {
+        frame_index: frame.frame_index,
+        render_width: resolution.render_width,
+        render_height: resolution.render_height,
+        output_width: resolution.output_width,
+        output_height: resolution.output_height,
+        jitter: frame.jitter,
+        reset_history: false,
+        color_transition: transition(
+            inputs.color_resource_id,
+            inputs.color_before_state,
+            SHADER_READ,
+        )?,
+        depth_transition: transition(
+            inputs.depth_resource_id,
+            inputs.depth_before_state,
+            DEPTH_SHADER_READ,
+        )?,
+        motion_vectors_transition: transition(
+            inputs.motion_vectors_resource_id,
+            inputs.motion_vectors_before_state,
+            SHADER_READ,
+        )?,
+    })
+}
+
+#[cfg(test)]
+mod dlss_evaluation_plan_tests {
+    use super::{
+        plan_dlss_evaluation, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
+        FrameInputs, MotionVectorDirection, MotionVectorUnits, ResolutionPlan,
+        TemporalFrameMetadata, TemporalHistoryTracker, TemporalHistoryResetReason as Reset,
+        TemporalMetadataError, TemporalHistoryTracker as Tracker, TemporalJitter,
+        ShaderReadTransitionError,
+    };
+
+    fn valid_inputs() -> DlssEvaluationInputs {
+        let mut tracker = Tracker::default();
+        tracker.plan_frame(1, 1280, 720, false, false).unwrap();
+        let frame = tracker.plan_frame(2, 1280, 720, false, false).unwrap();
+        DlssEvaluationInputs {
+            frame,
+            resolution: ResolutionPlan {
+                render_width: 1280,
+                render_height: 720,
+                output_width: 1920,
+                output_height: 1080,
+            },
+            available_inputs: FrameInputs {
+                color: true,
+                depth: true,
+                motion_vectors: true,
+                jitter: true,
+                exposure: false,
+            },
+            temporal_metadata: TemporalFrameMetadata {
+                render_width: 1280,
+                render_height: 720,
+                motion_vector_width: 1280,
+                motion_vector_height: 720,
+                motion_vector_scale_x: 1.0,
+                motion_vector_scale_y: 1.0,
+                jitter_x_pixels: frame.jitter.x_pixels,
+                jitter_y_pixels: frame.jitter.y_pixels,
+                motion_vector_units: MotionVectorUnits::Pixels,
+                motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
+                previous_frame_valid: true,
+            },
+            color_resource_id: 0x100,
+            depth_resource_id: 0x200,
+            motion_vectors_resource_id: 0x300,
+            recording_list: 0xabc,
+            expected_recording_list: 0xabc,
+            submission: 9,
+            finished_submission: 9,
+            color_before_state: 0x4,
+            depth_before_state: 0x10,
+            motion_vectors_before_state: 0x8,
+        }
+    }
+
+    #[test]
+    fn complete_frame_produces_three_shader_read_transition_proposals() {
+        let plan = plan_dlss_evaluation(valid_inputs()).unwrap();
+        assert_eq!(plan.frame_index, 2);
+        assert_eq!((plan.render_width, plan.render_height), (1280, 720));
+        assert_eq!((plan.output_width, plan.output_height), (1920, 1080));
+        assert_eq!(plan.color_transition.after_state, 0xC0);
+        assert_eq!(plan.depth_transition.after_state, 0xE0);
+        assert_eq!(plan.motion_vectors_transition.after_state, 0xC0);
+        assert!(plan.color_transition.barrier_required);
+        assert!(!plan.reset_history);
+    }
+
+    #[test]
+    fn missing_required_input_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.available_inputs.motion_vectors = false;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::MissingRequiredInputs)
+        );
+    }
+
+    #[test]
+    fn mismatched_extent_and_jitter_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.render_width = 640;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::RenderExtentMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.jitter_x_pixels += 0.125;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::JitterDoesNotMatchFrame));
+    }
+
+    #[test]
+    fn first_frame_or_reset_cannot_be_evaluated_with_missing_history() {
+        let mut inputs = valid_inputs();
+        inputs.frame.previous_frame_valid = false;
+        inputs.frame.reset_reason = Some(Reset::InitialFrame);
+        inputs.temporal_metadata.previous_frame_valid = false;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::TemporalHistoryUnavailable)
+        );
+    }
+
+    #[test]
+    fn resource_aliasing_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_resource_id = inputs.depth_resource_id;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::AliasedResources));
+    }
+
+    #[test]
+    fn incomplete_submission_and_unknown_states_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.finished_submission = 8;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidResourceTransition(
+                ShaderReadTransitionError::SubmissionNotCompleted
+            ))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.color_before_state = 0xFFFF;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidResourceTransition(
+                ShaderReadTransitionError::UnknownBeforeState
+            ))
+        );
+    }
+
+    #[test]
+    fn invalid_motion_vector_contract_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.motion_vector_width = 640;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::RenderExtentMismatch)
+        );
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.motion_vector_scale_x = f32::NAN;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidTemporalMetadata(TemporalMetadataError::InvalidMotionVectorScale))
+        );
+    }
+
+    #[test]
+    fn non_upscaled_output_extent_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.resolution.output_width = inputs.resolution.render_width;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::OutputIsNotLargerThanRender)
+        );
+    }
+}
+
 #[cfg(test)]
 mod candidate_registry_tests {
     use super::FrameCandidateRegistry;
