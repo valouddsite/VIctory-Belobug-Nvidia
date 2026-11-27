@@ -869,6 +869,19 @@ pub fn plan_dlss_evaluation(
         .map_err(DlssEvaluationPlanError::InvalidResourceTransition)
     };
 
+    // Validate the output transition first so its own failure is reported
+    // directly rather than being shadowed by the same shared submission gate
+    // while planning one of the input transitions.
+    let output_transition = plan_unordered_access_transition(
+        inputs.output_resource_id,
+        inputs.recording_list,
+        inputs.expected_recording_list,
+        inputs.submission,
+        inputs.finished_submission,
+        inputs.output_before_state,
+    )
+    .map_err(DlssEvaluationPlanError::InvalidOutputTransition)?;
+
     Ok(DlssEvaluationPlan {
         frame_index: frame.frame_index,
         render_width: resolution.render_width,
@@ -893,15 +906,7 @@ pub fn plan_dlss_evaluation(
             inputs.motion_vectors_before_state,
             SHADER_READ,
         )?,
-        output_transition: plan_unordered_access_transition(
-            inputs.output_resource_id,
-            inputs.recording_list,
-            inputs.expected_recording_list,
-            inputs.submission,
-            inputs.finished_submission,
-            inputs.output_before_state,
-        )
-        .map_err(DlssEvaluationPlanError::InvalidOutputTransition)?,
+        output_transition,
     })
 }
 
