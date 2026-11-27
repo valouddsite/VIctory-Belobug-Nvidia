@@ -1234,6 +1234,108 @@ pub fn temporal_jitter(frame_index: u64) -> TemporalJitter {
     }
 }
 
+/// One coherent CPU-side temporal frame description.
+///
+/// The frame index, render extent, history-validity decision and jitter sample
+/// are produced together so callers cannot accidentally select jitter from a
+/// different frame than the history tracker. This does not apply projection
+/// jitter, create motion vectors or prove that GPU history textures exist.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalFramePlan {
+    pub frame_index: u64,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub jitter: TemporalJitter,
+    pub previous_frame_valid: bool,
+    pub reset_reason: Option<TemporalHistoryResetReason>,
+}
+
+impl TemporalHistoryTracker {
+    /// Advance temporal history and produce the matching frame's jitter.
+    pub fn plan_frame(
+        &mut self,
+        frame_index: u64,
+        render_width: u32,
+        render_height: u32,
+        camera_cut: bool,
+        explicit_reset: bool,
+    ) -> Result<TemporalFramePlan, TemporalHistoryError> {
+        let history = self.begin_frame(
+            frame_index,
+            render_width,
+            render_height,
+            camera_cut,
+            explicit_reset,
+        )?;
+        Ok(TemporalFramePlan {
+            frame_index,
+            render_width,
+            render_height,
+            jitter: temporal_jitter(frame_index),
+            previous_frame_valid: history.previous_frame_valid,
+            reset_reason: history.reset_reason,
+        })
+    }
+}
+
+#[cfg(test)]
+mod temporal_frame_plan_tests {
+    use super::{
+        temporal_jitter, TemporalHistoryError, TemporalHistoryResetReason as Reset,
+        TemporalHistoryTracker,
+    };
+
+    #[test]
+    fn frame_plan_keeps_jitter_and_history_on_the_same_frame() {
+        let mut tracker = TemporalHistoryTracker::default();
+        let first = tracker.plan_frame(40, 1920, 1080, false, false).unwrap();
+        assert_eq!(first.frame_index, 40);
+        assert_eq!((first.render_width, first.render_height), (1920, 1080));
+        assert_eq!(first.jitter, temporal_jitter(40));
+        assert!(!first.previous_frame_valid);
+        assert_eq!(first.reset_reason, Some(Reset::InitialFrame));
+
+        let next = tracker.plan_frame(41, 1920, 1080, false, false).unwrap();
+        assert_eq!(next.jitter, temporal_jitter(41));
+        assert!(next.previous_frame_valid);
+        assert_eq!(next.reset_reason, None);
+    }
+
+    #[test]
+    fn frame_plan_reports_resize_and_camera_cut_resets() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.plan_frame(1, 1920, 1080, false, false).unwrap();
+        let resized = tracker.plan_frame(2, 1280, 720, false, false).unwrap();
+        assert_eq!(resized.reset_reason, Some(Reset::RenderExtentChanged));
+        assert!(!resized.previous_frame_valid);
+
+        let cut = tracker.plan_frame(3, 1280, 720, true, false).unwrap();
+        assert_eq!(cut.reset_reason, Some(Reset::CameraCut));
+        assert!(!cut.previous_frame_valid);
+    }
+
+    #[test]
+    fn frame_plan_reports_explicit_and_discontinuous_resets() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.plan_frame(10, 1280, 720, false, false).unwrap();
+        let explicit = tracker.plan_frame(11, 1280, 720, false, true).unwrap();
+        assert_eq!(explicit.reset_reason, Some(Reset::ExplicitReset));
+        let skipped = tracker.plan_frame(13, 1280, 720, false, false).unwrap();
+        assert_eq!(skipped.reset_reason, Some(Reset::FrameDiscontinuity));
+    }
+
+    #[test]
+    fn zero_extent_is_rejected_without_advancing_the_tracker() {
+        let mut tracker = TemporalHistoryTracker::default();
+        assert_eq!(
+            tracker.plan_frame(1, 0, 720, false, false),
+            Err(TemporalHistoryError::ZeroRenderExtent)
+        );
+        let valid = tracker.plan_frame(1, 1280, 720, false, false).unwrap();
+        assert_eq!(valid.reset_reason, Some(Reset::InitialFrame));
+    }
+}
+
 #[cfg(test)]
 mod temporal_jitter_tests {
     use super::{temporal_jitter, TemporalJitter};
