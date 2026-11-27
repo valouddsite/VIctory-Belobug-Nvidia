@@ -178,9 +178,16 @@ pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
 /// A frame-local registry used to associate one presented color resource
 /// with one unambiguous depth resource. Generic so its lifecycle can be
 /// tested without constructing Direct3D resources.
-#[derive(Default)]
 struct FrameCandidateRegistry<T> {
     candidates: std::collections::HashMap<(u64, usize), Option<T>>,
+}
+
+impl<T> Default for FrameCandidateRegistry<T> {
+    fn default() -> Self {
+        Self {
+            candidates: std::collections::HashMap::new(),
+        }
+    }
 }
 
 impl<T: PartialEq> FrameCandidateRegistry<T> {
