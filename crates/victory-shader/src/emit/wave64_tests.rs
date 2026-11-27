@@ -1309,6 +1309,15 @@ fn flag_wave(native: &NativeProgram) -> Option<u32> {
     lowered.expect("lower").wave_size
 }
 
+/// A console wave64 shader using DS swizzle only reads lanes inside its own 32-lane half.
+/// It must therefore lower to wave32 on NVIDIA without the cross-half LDS exchange path.
+#[test]
+fn wave64_ds_swizzle_runs_on_a_wave32_host() {
+    // DS_SWIZZLE_B32 (opcode 0x035), source address v0, destination v3, zero pattern.
+    let program = native(&ds(0x035, 3, 0, 0));
+    assert_eq!(flag_wave(&program), Some(32));
+}
+
 #[test]
 fn a_branch_that_only_raises_an_lds_flag_runs_in_waves_of_32() {
     // a read that misses the other host wave's write changes nothing the branch leaves behind
