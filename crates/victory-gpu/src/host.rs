@@ -9166,6 +9166,67 @@ impl Host {
         }
     }
 
+    /// Plan output allocation against DXGI's current local-memory budget.
+    ///
+    /// DXGI reports the process budget and current process usage separately;
+    /// their saturating difference is the conservative available budget used
+    /// by the DLSS allocation policy. A missing adapter/budget refuses a new
+    /// allocation rather than guessing.
+    #[allow(dead_code)]
+    pub(crate) fn plan_dlss_output_allocation(
+        &self,
+        current: Option<&DlssOutputTarget>,
+        requested: crate::dlss::DlssOutputTargetDesc,
+    ) -> Result<
+        crate::dlss::DlssOutputAllocationPlan,
+        crate::dlss::DlssOutputAllocationError,
+    > {
+        let available_local_bytes = self
+            .video_memory()
+            .map(|memory| memory[0].saturating_sub(memory[1]));
+        crate::dlss::DlssOutputAllocationPlan::new(
+            current.map(|target| target.desc),
+            requested,
+            available_local_bytes,
+        )
+    }
+
+    /// Reuse a matching output target, or allocate a new one only when DXGI's
+    /// current local-memory budget covers the conservative estimate.
+    #[allow(dead_code)]
+    pub(crate) fn get_or_create_dlss_output_target(
+        &self,
+        current: Option<&DlssOutputTarget>,
+        desc: crate::dlss::DlssOutputTargetDesc,
+    ) -> windows::core::Result<DlssOutputTarget> {
+        let plan = self
+            .plan_dlss_output_allocation(current, desc)
+            .map_err(|error| {
+                tracing::warn!(?error, "refusing DLSS output allocation");
+                windows::core::Error::empty()
+            })?;
+        match plan.action {
+            crate::dlss::DlssOutputAllocationAction::ReuseExisting => {
+                let current = current.ok_or_else(windows::core::Error::empty)?;
+                Ok(DlssOutputTarget {
+                    resource: current.resource.clone(),
+                    desc: current.desc,
+                })
+            }
+            crate::dlss::DlssOutputAllocationAction::AllocateNew => {
+                self.allocate_dlss_output_target(desc)
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn create_dlss_output_target(
+        &self,
+        desc: crate::dlss::DlssOutputTargetDesc,
+    ) -> windows::core::Result<DlssOutputTarget> {
+        self.get_or_create_dlss_output_target(None, desc)
+    }
+
     /// Allocate a dedicated default-heap 2D output texture with UAV capability.
     ///
     /// This deliberately does not hook into presentation yet: the current
@@ -9173,7 +9234,7 @@ impl Host {
     /// The returned resource starts in COMMON and must be transitioned by the
     /// future DLSS command-list integration before it is read or written.
     #[allow(dead_code)]
-    pub(crate) fn create_dlss_output_target(
+    fn allocate_dlss_output_target(
         &self,
         desc: crate::dlss::DlssOutputTargetDesc,
     ) -> windows::core::Result<DlssOutputTarget> {
