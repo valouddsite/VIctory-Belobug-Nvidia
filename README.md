@@ -187,6 +187,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 Test results should always be reported with the exact workflow run and commit. A test passing on GitHub's Windows runner must never be described as a successful test on an RTX 5060.
 
+## DLSS integration status
+
+DLSS remains **not integrated** and the normal presentation path remains the fallback. The Windows output-texture allocator now queries the active D3D12 device for `D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW` before creating a dedicated output texture; unsupported formats are refused instead of being assumed usable. This is only a capability gate: descriptor creation, real resource barriers, temporal inputs, Streamline initialization/evaluation and RTX hardware validation remain outstanding. See [the detailed DLSS integration status](docs/dlss-integration-status.md).
+
 ## ◈ Project notes
 
 - [RTX 5060 test-release guide](docs/rtx-5060-test-release.md)
