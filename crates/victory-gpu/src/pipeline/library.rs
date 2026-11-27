@@ -687,7 +687,7 @@ pub(crate) fn save(now: bool) {
     };
     // Through `used`: a process that asked for none yet (`victory shaders`)
     // must not write the earlier runs' list over with nothing.
-    let used: Vec<String> = used().iter().flatten().cloned().collect();
+    let used = used().snapshot();
     let library_written = if bytes > 0 { replace_library(dir, &tmp) } else { Ok(()) };
     if bytes > 0 && library_written.is_ok() {
         // In place unless the system refused and the new one waits beside it.
@@ -811,21 +811,91 @@ pub(crate) fn note_time(key: &str, ms: u64) {
 }
 
 /// Title pipeline keys requested by draws or dispatches (this run and the last).
-static USED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+///
+/// Lookups and inserts use independent locks selected from the digest suffix:
+/// recording one requested pipeline no longer blocks every other title thread.
+const USED_SHARDS: usize = 64;
+
+struct UsedPipelines {
+    shards: [Mutex<HashSet<String>>; USED_SHARDS],
+    len: std::sync::atomic::AtomicUsize,
+}
+
+impl UsedPipelines {
+    fn empty() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| Mutex::new(HashSet::new())),
+            len: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn from_lines(lines: impl Iterator<Item = String>) -> Self {
+        let used = Self::empty();
+        for key in lines {
+            if key.is_empty() || used.len.load(Ordering::Relaxed) >= EARLY_MAX {
+                continue;
+            }
+            let shard = load_lock_index(&key) % USED_SHARDS;
+            let mut keys = used.shards[shard].lock().unwrap_or_else(|e| e.into_inner());
+            if keys.insert(key) {
+                used.len.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        used
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        let shard = load_lock_index(key) % USED_SHARDS;
+        self.shards[shard]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(key)
+    }
+
+    fn insert(&self, key: &str) -> bool {
+        let shard = load_lock_index(key) % USED_SHARDS;
+        let mut keys = self.shards[shard].lock().unwrap_or_else(|e| e.into_inner());
+        if keys.contains(key) {
+            return false;
+        }
+        let reserved = self.len.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |len| {
+            (len < EARLY_MAX).then_some(len + 1)
+        });
+        if reserved.is_err() {
+            return false;
+        }
+        keys.insert(key.to_owned());
+        true
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        let mut keys = Vec::with_capacity(self.len.load(Ordering::Relaxed));
+        for shard in &self.shards {
+            keys.extend(
+                shard
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .cloned(),
+            );
+        }
+        keys
+    }
+}
+
+static USED: OnceLock<UsedPipelines> = OnceLock::new();
 static USED_CHANGED: AtomicBool = AtomicBool::new(false);
 
-fn used() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
-    let mut used = USED.lock().unwrap_or_else(|e| e.into_inner());
-    if used.is_none() {
+fn used() -> &'static UsedPipelines {
+    USED.get_or_init(|| {
         let listed = DIR
             .get()
             .and_then(|d| std::fs::read_to_string(d.join(EARLY_FILE)).ok())
             .unwrap_or_default();
-        let set: HashSet<String> = listed.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
-        tracing::info!(pipelines = set.len(), "title pipelines to start early");
-        *used = Some(set);
-    }
-    used
+        let used = UsedPipelines::from_lines(listed.lines().map(str::to_owned));
+        tracing::info!(pipelines = used.len.load(Ordering::Relaxed), "title pipelines to start early");
+        used
+    })
 }
 
 /// Whether the title pipeline with `key` was requested in this or an earlier run.
@@ -838,14 +908,12 @@ pub(crate) fn wanted_early(key: &str) -> bool {
     if *ALL.get_or_init(|| std::env::var_os("VICTORY_EARLY_ALL").is_some_and(|v| v == "1")) {
         return true;
     }
-    used().as_ref().is_some_and(|s| s.contains(key))
+    used().contains(key)
 }
 
 /// A draw or dispatch requested the title pipeline with `key`.
 pub(crate) fn note_used(key: &str) {
-    let mut used = used();
-    let set = used.get_or_insert_with(HashSet::new);
-    if set.len() < EARLY_MAX && set.insert(key.to_owned()) {
+    if used().insert(key) {
         USED_CHANGED.store(true, Ordering::Relaxed);
     }
 }
