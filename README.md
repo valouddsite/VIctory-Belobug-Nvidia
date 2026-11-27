@@ -61,6 +61,24 @@ The inherited VIctory reference measurements were collected on an Intel Core i9-
 
 An inherited RTX 3090 report showed partial execution at approximately 0.53–0.55 seconds per frame. That does not establish RTX 5060 compatibility.
 
+## ◈ DLSS status
+
+| Component | Current status |
+|---|---|
+| Host Direct3D 12 swap chain | Implemented in the host presenter |
+| Current presentation | Copies the guest output texture, or composites the Series S planes, into the swap-chain back buffer |
+| Streamline SDK | Not integrated |
+| DLSS Super Resolution | Not active; no DLSS output is claimed |
+| Per-frame depth and motion vectors | Not yet exposed as a verified presentation input set |
+| Sub-pixel jitter contract | Not yet wired through the guest renderer |
+| Safe fallback | Normal presentation remains unchanged if `VICTORY_DLSS` is requested |
+
+The host swap chain already exists; the missing work is the temporal upscaling path, not basic window presentation. The current presenter receives the finished guest texture and copies it to the back buffer. It does not yet have a verified set of scene color, depth, motion vectors and jitter suitable for temporal reconstruction.
+
+A preflight module now defines the required input contract, quality names and output-resolution planning, and explicitly reports DLSS as unavailable. Setting `VICTORY_DLSS=1` currently produces a warning and keeps normal presentation; it does **not** enable DLSS. `VICTORY_DLSS_QUALITY` accepts `quality`, `balanced`, `performance` or `ultra-performance` for future integration work only.
+
+See [docs/dlss-integration-status.md](docs/dlss-integration-status.md) for the remaining Streamline and renderer work. Do not treat this groundwork as a working DLSS implementation or as an RTX 5060 hardware test.
+
 ## ✦ CPU & pipeline optimisations
 
 Recent work targets CPU overhead around the host pipeline library and diagnostics:
