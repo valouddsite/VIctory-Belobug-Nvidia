@@ -194,6 +194,8 @@ pub struct TextureInfo {
     pub height: u32,
     pub samples: u32,
     pub dimension: u32,
+    /// Number of array slices in the D3D12 texture resource.
+    pub array_size: u32,
 }
 
 /// Conservative classification of the host-side D3D12 state tracker.
@@ -649,6 +651,7 @@ pub enum DlssEvaluationPlanError {
     InvalidColorDepthPair(DepthPairStatus),
     MotionVectorTextureMismatch,
     MultisampledInput,
+    TextureArrayNotSupported,
     OutputIsNotLargerThanRender,
     JitterDoesNotMatchFrame,
     TemporalHistoryUnavailable,
@@ -712,6 +715,14 @@ pub fn plan_dlss_evaluation(
         || inputs.motion_vectors_texture.samples != 1
     {
         return Err(DlssEvaluationPlanError::MultisampledInput);
+    }
+    // The current input contract is for ordinary Texture2D resources, not
+    // texture arrays. Streamline view tagging must not silently select a slice.
+    if inputs.color_texture.array_size != 1
+        || inputs.depth_texture.array_size != 1
+        || inputs.motion_vectors_texture.array_size != 1
+    {
+        return Err(DlssEvaluationPlanError::TextureArrayNotSupported);
     }
     let motion_vectors = inputs.motion_vectors_texture;
     if motion_vectors.width != frame.render_width
@@ -832,7 +843,7 @@ mod dlss_evaluation_plan_tests {
                 motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
                 previous_frame_valid: true,
             },
-            color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
+            color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1 },
             depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
             motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
             depth_view_format: 40,
@@ -901,6 +912,17 @@ mod dlss_evaluation_plan_tests {
         let mut inputs = valid_inputs();
         inputs.motion_vectors_texture.samples = 2;
         assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
+    }
+
+    #[test]
+    fn texture_arrays_are_rejected_until_slice_views_are_explicit() {
+        let mut inputs = valid_inputs();
+        inputs.color_texture.array_size = 2;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::TextureArrayNotSupported));
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.array_size = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::TextureArrayNotSupported));
     }
 
     #[test]
