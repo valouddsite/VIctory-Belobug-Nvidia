@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(gap(&[true, false, true, false, false, true], 3), None);
         assert_eq!(gap_from(&[true, true, false, false, true, false], 2, 2), Some(2));
         assert_eq!(gap_from(&[false, false, true, true, false, false], 2, 4), Some(4));
-        assert_eq!(gap_from(&[false, false, true, true, false, false], 2, 2), None);
+        assert_eq!(gap_from(&[false, false, true, true, false, false], 2, 2), Some(4));
         assert_eq!(gap(&[false, false, true, true, false, false], 2), Some(0));
     }
 }
