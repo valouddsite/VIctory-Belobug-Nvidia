@@ -190,6 +190,12 @@ impl<T> Default for FrameCandidateRegistry<T> {
     }
 }
 
+trait SubmissionTracked {
+    fn recording_list(&self) -> usize;
+    fn mark_submitted(&mut self, submission: u64);
+    fn submission_completed(&self, finished: u64) -> bool;
+}
+
 impl<T: PartialEq> FrameCandidateRegistry<T> {
     fn prune(&mut self, frame: u64) {
         self.candidates
@@ -227,10 +233,32 @@ impl<T: PartialEq> FrameCandidateRegistry<T> {
     }
 }
 
+impl<T: PartialEq + SubmissionTracked> FrameCandidateRegistry<T> {
+    fn mark_submitted(&mut self, recording_list: usize, submission: u64) {
+        for candidate in self.candidates.values_mut().flatten() {
+            if candidate.recording_list() == recording_list {
+                candidate.mark_submitted(submission);
+            }
+        }
+    }
+
+    fn consume_completed(
+        &mut self,
+        frame: u64,
+        color_resource: usize,
+        finished_submission: u64,
+    ) -> Option<T> {
+        let candidate = self.consume(frame, color_resource)?;
+        candidate.submission_completed(finished_submission).then_some(candidate)
+    }
+}
+
 #[cfg(windows)]
 pub(crate) struct PresentedDepthCandidate {
     color: std::sync::Arc<crate::resource::HostTexture>,
     depth: std::sync::Arc<crate::resource::HostTexture>,
+    recording_list: usize,
+    submission: Option<u64>,
 }
 
 #[cfg(windows)]
@@ -238,11 +266,31 @@ impl PartialEq for PresentedDepthCandidate {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.color, &other.color)
             && std::sync::Arc::ptr_eq(&self.depth, &other.depth)
+            && self.recording_list == other.recording_list
     }
 }
 
 #[cfg(windows)]
 impl Eq for PresentedDepthCandidate {}
+
+#[cfg(windows)]
+impl SubmissionTracked for PresentedDepthCandidate {
+    fn recording_list(&self) -> usize {
+        self.recording_list
+    }
+
+    fn mark_submitted(&mut self, submission: u64) {
+        match self.submission {
+            None => self.submission = Some(submission),
+            Some(existing) if existing == submission => {}
+            Some(_) => self.submission = None,
+        }
+    }
+
+    fn submission_completed(&self, finished: u64) -> bool {
+        self.submission.is_some_and(|submission| submission <= finished)
+    }
+}
 
 #[cfg(windows)]
 static PRESENT_DEPTH_CANDIDATES: OnceLock<
@@ -258,13 +306,31 @@ pub(crate) fn register_present_depth_candidate(
     color_resource: usize,
     color: std::sync::Arc<crate::resource::HostTexture>,
     depth: std::sync::Arc<crate::resource::HostTexture>,
+    recording_list: usize,
 ) {
     let candidates = PRESENT_DEPTH_CANDIDATES
         .get_or_init(|| std::sync::Mutex::new(FrameCandidateRegistry::default()));
     candidates
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .register(frame, color_resource, PresentedDepthCandidate { color, depth });
+        .register(
+            frame,
+            color_resource,
+            PresentedDepthCandidate { color, depth, recording_list, submission: None },
+        );
+}
+
+/// Bind candidates recorded by this host list to the submission token assigned
+/// by Host::submit. Candidates never included in a submission remain unusable.
+#[cfg(windows)]
+pub(crate) fn mark_present_depth_candidates_submitted(recording_list: usize, submission: u64) {
+    let Some(candidates) = PRESENT_DEPTH_CANDIDATES.get() else {
+        return;
+    };
+    candidates
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .mark_submitted(recording_list, submission);
 }
 
 /// Invalidate a color candidate when a later target binding has no compatible
@@ -285,12 +351,13 @@ pub(crate) fn invalidate_present_depth_candidate(frame: u64, color_resource: usi
 pub(crate) fn consume_present_depth_candidate(
     frame: u64,
     color_resource: usize,
+    finished_submission: u64,
 ) -> Option<PresentedDepthCandidate> {
     let candidates = PRESENT_DEPTH_CANDIDATES.get()?;
     let candidate = candidates
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .consume(frame, color_resource)?;
+        .consume_completed(frame, color_resource, finished_submission)?;
     static REPORTED: OnceLock<()> = OnceLock::new();
     REPORTED.get_or_init(|| {
         tracing::info!(
@@ -303,6 +370,39 @@ pub(crate) fn consume_present_depth_candidate(
 #[cfg(test)]
 mod candidate_registry_tests {
     use super::FrameCandidateRegistry;
+
+    #[derive(PartialEq)]
+    struct Tracked {
+        list: usize,
+        submission: Option<u64>,
+    }
+
+    impl super::SubmissionTracked for Tracked {
+        fn recording_list(&self) -> usize { self.list }
+        fn mark_submitted(&mut self, submission: u64) { self.submission = Some(submission); }
+        fn submission_completed(&self, finished: u64) -> bool {
+            self.submission.is_some_and(|value| value <= finished)
+        }
+    }
+
+    #[test]
+    fn candidate_requires_its_recording_list_to_be_submitted_and_finished() {
+        let mut registry = FrameCandidateRegistry::default();
+        registry.register(60, 0x100, Tracked { list: 0xabc, submission: None });
+        registry.mark_submitted(0xdef, 7);
+        assert!(registry.consume_completed(60, 0x100, 99).is_none());
+
+        registry.register(61, 0x100, Tracked { list: 0xabc, submission: None });
+        registry.mark_submitted(0xabc, 8);
+        assert!(registry.consume_completed(61, 0x100, 7).is_none());
+
+        registry.register(62, 0x100, Tracked { list: 0xabc, submission: None });
+        registry.mark_submitted(0xabc, 9);
+        assert_eq!(
+            registry.consume_completed(62, 0x100, 9).map(|item| item.submission),
+            Some(Some(9))
+        );
+    }
 
     #[test]
     fn exact_color_depth_pair_is_consumed_only_in_its_frame() {
