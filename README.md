@@ -78,6 +78,7 @@ Recent work targets CPU overhead around the host pipeline library and diagnostic
 | Upload worker batches | Each long-lived copy worker reuses its batch vector capacity instead of allocating and freeing a new vector for every submission |
 | Upload arena allocation | Reserved blocks are marked under the allocator lock, then zeroed after releasing it so large uploads do not serialize unrelated arena allocations |
 | Upload arena search | A per-arena cursor starts first-fit searches near the previous allocation and moves backward when blocks are freed, avoiding repeated scans from the beginning in common reuse patterns |
+| Upload arena capacity | A free-block counter skips arenas that cannot satisfy a request before scanning their allocation bitmap; allocation and release update the count together with the bitmap |
 | Persistence | Existing 32-character hexadecimal `early-pipelines.txt` format retained |
 
 These changes reduce specific sources of lock contention and allocation overhead. They do **not** prove higher FPS or lower frame times; those effects require controlled measurements on the target GPU.
