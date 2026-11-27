@@ -51,8 +51,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features --locked -- --test-threads=1
 
+  launcher-validation:
+    name: Windows launcher validation
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Parse scripts and validate launcher entry point
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @('scripts/play.ps1', 'scripts/launcher.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $script), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "$script has parse errors: $($errors -join '; ')" }
+          }
+          foreach ($required in @('VIctory-Launcher.cmd', 'victory.example.toml')) {
+            if (-not (Test-Path $required)) { throw "Required launcher file is missing: $required" }
+          }
+          $entry = Get-Content 'VIctory-Launcher.cmd' -Raw
+          if ($entry -notmatch '-ExecutionPolicy Bypass' -or $entry -notmatch 'scripts\\launcher.ps1') {
+            throw 'The CMD entry point must invoke the launcher with a process-scoped policy bypass.'
+          }
+
   check:
-    needs: [clippy, test-default, test-diagnostics]
+    needs: [clippy, test-default, test-diagnostics, launcher-validation]
     if: always()
     runs-on: windows-latest
     timeout-minutes: 60
@@ -61,6 +85,7 @@ jobs:
         run: |
           if ('${{ needs.clippy.result }}' -ne 'success' -or
               '${{ needs.test-default.result }}' -ne 'success' -or
-              '${{ needs.test-diagnostics.result }}' -ne 'success') {
+              '${{ needs.test-diagnostics.result }}' -ne 'success' -or
+              '${{ needs.launcher-validation.result }}' -ne 'success') {
             exit 1
           }

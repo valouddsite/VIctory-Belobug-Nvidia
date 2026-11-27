@@ -12,7 +12,7 @@ After this workflow has been merged into the repository's default branch:
 4. Wait for the run to finish. Download the `VIctory-RTX5060-Windows-x64` artifact from the completed run.
 5. Extract the ZIP on the Windows PC.
 
-The workflow runs the default workspace tests, builds `victory.exe` in optimized release mode for Windows x64, and packages the executable, example configuration, launcher and this test guide. The artifact is retained for 14 days.
+The workflow runs the default workspace tests, builds `victory.exe` in optimized release mode for Windows x64, and packages the executable, example configuration, launcher and this test guide. The artifact is retained for 14 days. In the ZIP, `victory.exe` is at the extracted folder root; the launcher automatically uses that packaged binary for `-Build release` (source checkouts continue to use `target\\release\\victory.exe`).
 
 ## Local setup
 
@@ -23,20 +23,19 @@ Requirements:
 - A current graphics driver.
 - Your own legally obtained game files and executable.
 
-1. Copy `victory.example.toml` to `victory.toml`.
-2. Edit `[paths].game_dir` to point to your game data directory. Keep game data outside the extracted package.
-3. Open PowerShell in the extracted package directory.
-4. Run the normal release profile:
+1. Extract the ZIP somewhere writable, keeping your game files outside that folder.
+2. Double-click `VIctory-Launcher.cmd`.
+3. Select your game's executable in the file picker.
+4. Choose the normal profile first. If startup or rendering is unstable, rerun and choose the safe profile.
 
-   ```powershell
-   .\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build release
-   ```
+The launcher creates `victory.toml` from the example if needed, passes the selected game folder only to that launch session, verifies the resolved configuration, and writes a log under `logs/`. The CMD entry point uses a temporary PowerShell execution-policy bypass for its child process only; it does not change the user or machine policy.
 
-5. If the title fails to start or rendering is unstable, retry with the conservative profile:
+Advanced users can still run the PowerShell launcher manually:
 
-   ```powershell
-   .\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build release -Safe
-   ```
+```powershell
+.\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build release
+.\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build release -Safe
+```
 
 Do not run the launcher as Administrator. Back up saves before testing.
 
