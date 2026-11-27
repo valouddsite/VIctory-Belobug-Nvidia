@@ -5805,6 +5805,15 @@ impl Host {
         let behind = late && flying();
         stage.next("submit: gathering what to ask about");
         let this_submission = STARTED.fetch_add(1, Ordering::AcqRel) + 1;
+        // Tie any depth candidate recorded by these exact host lists to this
+        // submission. It is not eligible at presentation until FINISHED reaches
+        // this token after the queue fence has completed.
+        for list in runs {
+            crate::dlss::mark_present_depth_candidates_submitted(
+                *list as *const HostList as usize,
+                this_submission,
+            );
+        }
         // The ranges shaders write are counted for it (with the relay).
         crate::shadow::preparing(this_submission);
         let started = std::time::Instant::now();
