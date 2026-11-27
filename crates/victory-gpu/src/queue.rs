@@ -466,6 +466,16 @@ pub(crate) fn queued() -> u64 {
     behind::queued()
 }
 
+/// Whether all title submissions have been handed to the host and all
+/// host GPU submissions have completed. DLSS preflight uses this only to
+/// discard candidates while work is pending; it does not identify which
+/// command list produced a candidate.
+#[cfg(windows)]
+pub(crate) fn gpu_submissions_quiescent() -> bool {
+    let (started, finished) = crate::host::submissions();
+    crate::dlss::submissions_quiescent(queued(), started, finished)
+}
+
 /// For the frame-rate line.
 #[cfg(windows)]
 pub(crate) fn behind_line(frames: f64) {
@@ -1115,9 +1125,15 @@ fn show_planes(
     let Some(host) = crate::host::host() else {
         return;
     };
-    let _depth_candidate = (what.resource != 0)
+    let depth_candidate = (what.resource != 0)
         .then(|| crate::dlss::consume_present_depth_candidate(what.frame, what.resource))
         .flatten();
+    let _depth_candidate = if depth_candidate.is_some() && !gpu_submissions_quiescent() {
+        crate::dlss::report_present_candidate_not_quiescent();
+        None
+    } else {
+        depth_candidate
+    };
     let shown = host.present_planes(texture, state, overlay, what.frame);
     #[cfg(feature = "diagnostics")]
     blinks(what.frame, what.resource as This, state, shown);
