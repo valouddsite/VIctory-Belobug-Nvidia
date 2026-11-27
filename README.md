@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="assets/branding/victory-logo.svg" alt="VIctory — NVIDIA RTX 5060" width="680" />
+<img src="assets/branding/xboxx-logo.svg" alt="Xboxx — NVIDIA RTX 5060" width="680" />
 
 ### NVIDIA RTX 5060 · WINDOWS x64 · DIRECT3D 12
 
-**A community compatibility fork focused on NVIDIA support, GPU diagnostics and lower CPU overhead.**
+**Xboxx — a community compatibility project focused on NVIDIA support, GPU diagnostics and lower CPU overhead.**
 
 <img alt="Platform" src="https://img.shields.io/badge/PLATFORM-WINDOWS%2010%2F11-00C8FF?style=for-the-badge&logo=windows&logoColor=white" />
 <img alt="Language" src="https://img.shields.io/badge/RUST-2021-DEA584?style=for-the-badge&logo=rust&logoColor=white" />
@@ -24,7 +24,7 @@
 
 ## ✦ Project overview
 
-This repository is a fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer for running an Xbox Series title on Windows from files supplied by the user.
+Xboxx is based on [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer for running an Xbox Series title on Windows from files supplied by the user.
 
 This fork concentrates on:
 
@@ -50,7 +50,7 @@ The work is experimental. It does not turn every Xbox title into a working Windo
 
 ### Hardware evidence — keep the results separate
 
-The inherited reference measurements were collected on an Intel Core i9-12900K, 64 GB RAM and a Radeon RX 7900 XTX (24 GB VRAM), with ray tracing disabled. They are **not RTX 5060 results**.
+The inherited VIctory reference measurements were collected on an Intel Core i9-12900K, 64 GB RAM and a Radeon RX 7900 XTX (24 GB VRAM), with ray tracing disabled. They are **not RTX 5060 results**.
 
 | Reference scene / configuration | Reported result |
 |---|---:|
@@ -80,7 +80,7 @@ These changes reduce specific sources of lock contention and allocation overhead
 
 ### Option A — one-click Windows launcher
 
-1. Download the latest available `VIctory-RTX5060-Windows-x64` artifact from the [GitHub Actions runs](https://github.com/valouddsite/VIctory-Belobug-Nvidia/actions).
+1. Download the latest available `VIctory-RTX5060-Windows-x64` artifact (the executable package keeps its original technical filename) from the [GitHub Actions runs](https://github.com/valouddsite/VIctory-Belobug-Nvidia/actions).
 2. Extract the ZIP to a writable folder.
 3. Double-click `VIctory-Launcher.cmd`.
 4. Select your own game executable.

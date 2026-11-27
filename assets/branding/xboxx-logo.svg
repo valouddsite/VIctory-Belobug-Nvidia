@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1040" height="300" viewBox="0 0 1040 300" role="img" aria-labelledby="title desc">
-  <title id="title">VIctory</title>
-  <desc id="desc">VIctory geometric V logo with a neon gradient from orange and magenta through violet to cyan.</desc>
+  <title id="title">Xboxx</title>
+  <desc id="desc">Xboxx geometric V logo with a neon gradient from orange and magenta through violet to cyan.</desc>
   <defs>
     <linearGradient id="neon" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffb347"/>
@@ -19,8 +19,8 @@
     </filter>
   </defs>
   <g filter="url(#glow)" stroke-linejoin="round">
-    <path d="M30 40 H102 L164 190 L226 40 H298 L192 260 H136 Z" fill="url(#neon)" stroke="#210d3c" stroke-width="10"/>
-    <text x="332" y="218" font-family="Segoe UI, Arial, sans-serif" font-size="172" font-weight="850" letter-spacing="-11" fill="url(#word)" stroke="#210d3c" stroke-width="6" paint-order="stroke">VIctory</text>
+    <path d="M36 40 H112 L164 105 L216 40 H292 L207 142 L296 260 H214 L164 185 L114 260 H32 L121 142 Z" fill="url(#neon)" stroke="#210d3c" stroke-width="10"/>
+    <text x="332" y="218" font-family="Segoe UI, Arial, sans-serif" font-size="164" font-weight="850" letter-spacing="-8" fill="url(#word)" stroke="#210d3c" stroke-width="6" paint-order="stroke">Xboxx</text>
   </g>
   <path d="M38 278 H1002" stroke="url(#neon)" stroke-width="4" opacity=".9"/>
   <text x="1000" y="35" text-anchor="end" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="700" letter-spacing="5" fill="#9b7cff">NVIDIA · DIRECT3D 12 · WINDOWS</text>
