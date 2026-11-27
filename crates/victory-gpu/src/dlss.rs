@@ -121,7 +121,8 @@ pub struct TextureInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostResourceStateClass {
     Common,
-    ReadOnly,
+    ShaderResourceRead,
+    OtherReadOnly,
     RenderTarget,
     DepthWrite,
     UnorderedAccess,
@@ -130,16 +131,33 @@ pub enum HostResourceStateClass {
     Unknown,
 }
 
-/// Classify the raw D3D12 state bits tracked by HostTexture.
-/// Read-only states may be combined; write states are deliberately classified
-/// separately so future barrier planning cannot mistake them for shader inputs.
+/// Classify raw D3D12 resource-state bits.
+///
+/// D3D12 permits combinations of read-only states. A state is considered a
+/// shader-resource read only when PIXEL or NON_PIXEL_SHADER_RESOURCE is set
+/// and every bit belongs to the conservative read-only mask. Write states and
+/// unrecognized bits are never classified as shader-readable.
 pub const fn classify_host_resource_state(state: u32) -> HostResourceStateClass {
+    const VERTEX_AND_CONSTANT_BUFFER: u32 = 0x1;
+    const INDEX_BUFFER: u32 = 0x2;
     const RENDER_TARGET: u32 = 0x4;
     const UNORDERED_ACCESS: u32 = 0x8;
     const DEPTH_WRITE: u32 = 0x10;
+    const DEPTH_READ: u32 = 0x20;
+    const NON_PIXEL_SHADER_RESOURCE: u32 = 0x40;
+    const PIXEL_SHADER_RESOURCE: u32 = 0x80;
+    const STREAM_OUT: u32 = 0x100;
+    const INDIRECT_ARGUMENT: u32 = 0x200;
     const COPY_DEST: u32 = 0x400;
     const COPY_SOURCE: u32 = 0x800;
-    const READ_ONLY: u32 = 0x1 | 0x2 | 0x20 | 0x40 | 0x80 | 0x200;
+    const SHADER_READ: u32 = NON_PIXEL_SHADER_RESOURCE | PIXEL_SHADER_RESOURCE;
+    const READ_ONLY: u32 = VERTEX_AND_CONSTANT_BUFFER
+        | INDEX_BUFFER
+        | DEPTH_READ
+        | NON_PIXEL_SHADER_RESOURCE
+        | PIXEL_SHADER_RESOURCE
+        | INDIRECT_ARGUMENT
+        | COPY_SOURCE;
 
     if state == 0 {
         HostResourceStateClass::Common
@@ -149,15 +167,28 @@ pub const fn classify_host_resource_state(state: u32) -> HostResourceStateClass 
         HostResourceStateClass::DepthWrite
     } else if state == UNORDERED_ACCESS {
         HostResourceStateClass::UnorderedAccess
-    } else if state == COPY_SOURCE {
-        HostResourceStateClass::CopySource
     } else if state == COPY_DEST {
         HostResourceStateClass::CopyDestination
+    } else if state == COPY_SOURCE {
+        HostResourceStateClass::CopySource
+    } else if state & SHADER_READ != 0 && state & !READ_ONLY == 0 {
+        HostResourceStateClass::ShaderResourceRead
     } else if state & !READ_ONLY == 0 {
-        HostResourceStateClass::ReadOnly
+        HostResourceStateClass::OtherReadOnly
     } else {
+        // Includes write/read mixtures and state bits not covered above.
+        let _ = STREAM_OUT;
         HostResourceStateClass::Unknown
     }
+}
+
+/// Whether a tracked state can be read through a D3D12 shader-resource view.
+/// This is only a diagnostic predicate; it does not establish synchronization.
+pub const fn is_shader_resource_readable(state: u32) -> bool {
+    matches!(
+        classify_host_resource_state(state),
+        HostResourceStateClass::ShaderResourceRead
+    )
 }
 
 /// Why a color/depth pair cannot be used for temporal reconstruction.
@@ -415,7 +446,9 @@ pub(crate) fn consume_present_depth_candidate(
             depth_state,
             color_class = ?classify_host_resource_state(color_state),
             depth_class = ?classify_host_resource_state(depth_state),
-            "DLSS preflight: sampled tracked D3D12 states for the completed color/depth candidate; diagnostic only, no barriers or evaluation"
+            color_shader_readable = is_shader_resource_readable(color_state),
+            depth_shader_readable = is_shader_resource_readable(depth_state),
+            "DLSS preflight: sampled tracked D3D12 states for the completed color/depth candidate; shader-read flags are diagnostic only, no barriers or evaluation"
         );
     });
     static REPORTED: OnceLock<()> = OnceLock::new();
@@ -594,9 +627,27 @@ mod tests {
         assert_eq!(classify_host_resource_state(0x8), HostResourceStateClass::UnorderedAccess);
         assert_eq!(classify_host_resource_state(0x800), HostResourceStateClass::CopySource);
         assert_eq!(classify_host_resource_state(0x400), HostResourceStateClass::CopyDestination);
-        assert_eq!(classify_host_resource_state(0x40 | 0x80), HostResourceStateClass::ReadOnly);
+        assert_eq!(classify_host_resource_state(0x40 | 0x80), HostResourceStateClass::ShaderResourceRead);
+        assert_eq!(classify_host_resource_state(0x20 | 0x40), HostResourceStateClass::ShaderResourceRead);
+        assert_eq!(classify_host_resource_state(0x1 | 0x2), HostResourceStateClass::OtherReadOnly);
+        assert_eq!(classify_host_resource_state(0x200), HostResourceStateClass::OtherReadOnly);
         assert_eq!(classify_host_resource_state(0x4 | 0x80), HostResourceStateClass::Unknown);
+        assert_eq!(classify_host_resource_state(0x100), HostResourceStateClass::Unknown);
         assert_eq!(classify_host_resource_state(0x1000), HostResourceStateClass::Unknown);
+    }
+
+    #[test]
+    fn shader_resource_readability_requires_shader_read_bits_and_no_write_state() {
+        assert!(is_shader_resource_readable(0x40));
+        assert!(is_shader_resource_readable(0x80));
+        assert!(is_shader_resource_readable(0x20 | 0x40 | 0x80));
+        assert!(is_shader_resource_readable(0x800 | 0x40));
+        assert!(!is_shader_resource_readable(0));
+        assert!(!is_shader_resource_readable(0x20));
+        assert!(!is_shader_resource_readable(0x4));
+        assert!(!is_shader_resource_readable(0x10));
+        assert!(!is_shader_resource_readable(0x8));
+        assert!(!is_shader_resource_readable(0x4 | 0x80));
     }
 
     #[test]
