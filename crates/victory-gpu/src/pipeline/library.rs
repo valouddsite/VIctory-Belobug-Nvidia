@@ -415,14 +415,39 @@ unsafe impl Send for Library {}
 // SAFETY: as above; the other fields are an atomic and a lock.
 unsafe impl Sync for Library {}
 
-/// Held by a load of the pipeline named `name`: loads of the same name
-/// wait for each other (the host's one exception to the library's thread
-/// safety: such a load may change that pipeline's entry). Names share 64
-/// locks, so two different names seldom wait.
+/// A pipeline name is the first 128 bits of a BLAKE3 digest, rendered as
+/// 32 hexadecimal characters. Its final byte is already uniformly
+/// distributed, so use it directly to choose one of the load-lock stripes.
+const LOAD_LOCKS: usize = 256;
+
+fn load_lock_index(name: &str) -> usize {
+    fn nibble(byte: u8) -> Option<usize> {
+        match byte {
+            b'0'..=b'9' => Some(usize::from(byte - b'0')),
+            b'a'..=b'f' => Some(usize::from(byte - b'a') + 10),
+            b'A'..=b'F' => Some(usize::from(byte - b'A') + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = name.as_bytes();
+    if bytes.len() >= 2 {
+        if let (Some(high), Some(low)) = (nibble(bytes[bytes.len() - 2]), nibble(bytes[bytes.len() - 1])) {
+            return high * 16 + low;
+        }
+    }
+
+    // Defensive fallback for non-hex names (production names are digests).
+    bytes.iter().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(usize::from(*b))) % LOAD_LOCKS
+}
+
+/// Loads of the same pipeline name wait for each other (the host's one
+/// exception to the library's thread safety: such a load may change that
+/// pipeline's entry). The digest suffix spreads unrelated loads across
+/// 256 locks without an extra hashing pass.
 fn same_name(name: &str) -> MutexGuard<'static, ()> {
-    static LOADING: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
-    let at = name.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(usize::from(b)));
-    LOADING[at % LOADING.len()].lock().unwrap_or_else(|e| e.into_inner())
+    static LOADING: [Mutex<()>; LOAD_LOCKS] = [const { Mutex::new(()) }; LOAD_LOCKS];
+    LOADING[load_lock_index(name)].lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// With `VICTORY_LIBRARY_LOCK=1`: held by every library call, as before.
@@ -794,6 +819,18 @@ pub(crate) fn note_used(key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_load_locks_are_spread_by_digest_suffix() {
+        let buckets: HashSet<_> = (0..4096u32)
+            .map(|i| load_lock_index(&name("graphics", &i.to_le_bytes(), &[b"vs"], "state")))
+            .collect();
+        assert_eq!(LOAD_LOCKS, 256);
+        assert!(buckets.len() >= 240, "only {} of 256 lock stripes were used", buckets.len());
+        let bytes = b"not-a-hex-name";
+        let fallback = bytes.iter().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(usize::from(*b))) % LOAD_LOCKS;
+        assert_eq!(load_lock_index("not-a-hex-name"), fallback);
+    }
 
     #[test]
     fn names_change_with_what_goes_into_the_pipeline() {
