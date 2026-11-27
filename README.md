@@ -1,13 +1,21 @@
-# VIctory on an RX 7900 XTX
+# VIctory — NVIDIA RTX 5060 compatibility work
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
 that runs an Xbox Series title natively on Windows from files the user supplies.
 
+## NVIDIA RTX 5060 work
+
+This fork is being evaluated and adapted for NVIDIA GeForce RTX 5060 (8 GB VRAM). The current renderer already uses host Direct3D 12 and has generic DXGI adapter selection; this does **not** yet mean RTX 5060 compatibility or playable performance has been demonstrated.
+
+The existing RX 7900 XTX measurements below are reference results from the AMD development machine, not RTX 5060 results. The only reported NVIDIA run in the inherited baseline is an RTX 3090 run at roughly 0.53–0.55 seconds per frame, so it is evidence of partial NVIDIA execution, not evidence that the RTX 5060 works well.
+
+The adaptation will prioritize: correct NVIDIA adapter selection and capability reporting; shader-model/mesh-shader compatibility; VRAM-budget-aware resource residency for an 8 GB card; and reproducible Windows builds and tests. GPU runtime performance must be measured on a real RTX 5060 before any performance claim is made. Deterministic unit tests cover the existing VRAM-retention thresholds at an 8 GB budget. The first CI run exposed an incorrect expected boundary in the new test (68% was confused with 75%); that boundary was corrected. On the next completed Windows CI run, both the standard workspace tests and the all-features diagnostics tests passed. Clippy then identified a manually implemented ceiling division in the test helper; this was replaced with Rust's `div_ceil()` method. A fresh full Windows CI run is required to validate that final correction. The VRAM policy itself has not been tuned without RTX 5060 hardware measurements.
+
 ## The goal
 
 **A stable 30 fps or more without ray tracing, then as high a frame rate and as
-low frame times as the PC allows**, on an AMD RX 7900 XTX first and on PCs with
-32 GB (later 16 GB) of RAM.
+low frame times as the PC allows**, with the NVIDIA RTX 5060 as the first target
+for this fork. Existing AMD results remain reference measurements only.
 
 The way there is **porting, not emulating**: patching the title's renderer so it
 behaves the way a PC renderer does, rather than having the layer watch and copy
@@ -90,8 +98,8 @@ model 6.6 and mesh shaders, Rust (the toolchain is pinned), the MSVC build
 tools, and your own dump of the title.
 
 ```powershell
-git clone https://github.com/avatarmanz/VIctory-7900XTX
-cd VIctory-7900XTX
+git clone https://github.com/valouddsite/VIctory-Belobug-Nvidia
+cd VIctory-Belobug-Nvidia
 copy victory.example.toml victory.toml      # then set your paths, outside this folder
 cargo build --locked --profile diag -p victory --features diagnostics
 scripts\play.ps1 -Exe <path of your copy's executable>

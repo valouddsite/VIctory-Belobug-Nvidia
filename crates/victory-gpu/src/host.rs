@@ -11427,6 +11427,40 @@ mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at 
     }
 
     #[test]
+    fn rtx_5060_eight_gib_vram_idle_thresholds_are_covered() {
+        let gib = 1u64 << 30;
+        let budget = 8 * gib;
+        let threshold = |percent: u64| (budget * percent).div_ceil(100);
+        let idle = |used| super::vram_idle_for(Some([budget, used, 0, 0]), true);
+
+        // Below 68%, retain idle textures for longer.
+        assert_eq!(idle(threshold(68) - 1), 600_000);
+        // From 68% through 74%, use the intermediate retention period.
+        assert_eq!(idle(threshold(68)), 30_000);
+        assert_eq!(idle(threshold(75) - 1), 30_000);
+        // At 75%, begin trimming idle resources.
+        assert_eq!(idle(threshold(75)), 2_500);
+        // At 85%, use the shortest safe idle timeout.
+        assert_eq!(idle(threshold(85)), 1_000);
+        // Over-budget reports must stay in the high-pressure path.
+        assert_eq!(idle(9 * gib), 1_000);
+    }
+
+    #[test]
+    fn rtx_5060_eight_gib_vram_keep_budget_has_expected_watermarks() {
+        let gib = 1u64 << 30;
+        let budget = 8 * gib;
+        let at_85 = (budget / 100) * 85;
+        let at_93 = (budget / 100) * 93;
+
+        assert_eq!(super::vram_keep(budget, at_85 - 1), (600_000, u64::MAX));
+        assert_eq!(super::vram_keep(budget, at_85).0, 5_000);
+        assert_eq!(super::vram_keep(budget, at_93 - 1).0, 5_000);
+        assert_eq!(super::vram_keep(budget, at_93).0, 3_000);
+        assert_eq!(super::vram_keep(0, 7), (5_000, u64::MAX));
+    }
+
+    #[test]
     fn ram_idle_ms_scales_with_pressure() {
         let ram_idle_ms = |avail| super::ram_idle_for(avail, false);
         assert_eq!(super::ram_idle_for(Some(12 << 30), true), 300_000);
