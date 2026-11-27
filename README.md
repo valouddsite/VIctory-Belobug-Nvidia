@@ -75,6 +75,7 @@ Recent work targets CPU overhead around the host pipeline library and diagnostic
 | Conversion cache publication | Concurrent writers cannot turn a valid cache hit into a Windows rename failure; the first complete entry is retained |
 | Shader cache keys | The translator build fingerprint is hashed as a separate prefix, avoiding a full copy of each shader container before cache lookup |
 | Texture upload scheduling | Pending ahead-of-list uploads are indexed by host-copy serial for constant-time lookup and removal instead of repeated linear scans |
+| Upload worker batches | Each long-lived copy worker reuses its batch vector capacity instead of allocating and freeing a new vector for every submission |
 | Persistence | Existing 32-character hexadecimal `early-pipelines.txt` format retained |
 
 These changes reduce specific sources of lock contention and allocation overhead. They do **not** prove higher FPS or lower frame times; those effects require controlled measurements on the target GPU.
