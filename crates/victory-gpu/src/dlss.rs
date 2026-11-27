@@ -156,6 +156,25 @@ pub fn validate_depth_pair(
     DepthPairStatus::Compatible
 }
 
+
+/// Report each depth-pair validation outcome at most once per process.
+/// This is diagnostic only; it does not authorize DLSS evaluation.
+pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static REPORTED: AtomicU8 = AtomicU8::new(0);
+    let bit = 1u8 << (status as u8);
+    let previous = REPORTED.fetch_or(bit, Ordering::Relaxed);
+    if previous & bit != 0 {
+        return;
+    }
+    match status {
+        DepthPairStatus::Compatible => tracing::info!(
+            "DLSS preflight: at least one bound color/depth target pair has matching 2D extent and sample count"
+        ),
+        other => tracing::warn!(?other, "DLSS preflight: bound color/depth target pair rejected"),
+    }
+}
+
 /// Current backend state. DLSS stays unavailable until Streamline is linked,
 /// initialized, and fed by the real renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
