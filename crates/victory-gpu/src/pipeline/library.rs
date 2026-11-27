@@ -258,10 +258,9 @@ static CALLS: [Mutex<Vec<ActiveCall>>; CALL_SHARDS] =
     [const { Mutex::new(Vec::new()) }; CALL_SHARDS];
 
 fn call_shard(thread: u32) -> usize {
-    // Multiplicative hashing uses the high bits to spread sequential OS
-    // thread IDs across shards (thread IDs are commonly aligned values).
-    ((u64::from(thread).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - 6)) as usize)
-        % CALL_SHARDS
+    // The high six bits of a 32-bit multiplicative hash spread sequential
+    // and commonly aligned OS thread IDs across the 64 diagnostics shards.
+    (thread.wrapping_mul(0x9E37_79B9) >> (u32::BITS - 6)) as usize
 }
 
 thread_local! {
@@ -852,7 +851,17 @@ mod tests {
         assert_eq!(
             shards.len(),
             CALL_SHARDS,
-            "worker IDs should cover every diagnostics shard"
+            "sequential worker IDs should cover every diagnostics shard"
+        );
+    }
+
+    #[test]
+    fn pipeline_call_tracking_shards_spread_aligned_worker_ids() {
+        let shards: HashSet<_> = (1..=4096u32).map(|id| call_shard(id * 4)).collect();
+        assert_eq!(
+            shards.len(),
+            CALL_SHARDS,
+            "four-byte-aligned worker IDs should cover every diagnostics shard"
         );
     }
 
