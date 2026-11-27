@@ -4194,7 +4194,12 @@ impl Host {
             let mesh = ok
                 && options.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED
                 && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_6.0;
-            tracing::info!(mesh, "host mesh shader support");
+            tracing::info!(
+                mesh,
+                mesh_shader_tier = options.MeshShaderTier.0,
+                shader_model = format_args!("{:#x}", model.HighestShaderModel.0),
+                "host mesh shader support"
+            );
             mesh
         })
     }
