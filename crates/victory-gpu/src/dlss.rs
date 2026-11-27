@@ -1151,8 +1151,8 @@ mod dlss_evaluation_plan_tests {
         inputs.finished_submission = 8;
         assert_eq!(
             plan_dlss_evaluation(inputs),
-            Err(Error::InvalidResourceTransition(
-                ShaderReadTransitionError::SubmissionNotCompleted
+            Err(Error::InvalidOutputTransition(
+                super::UnorderedAccessTransitionError::SubmissionNotCompleted
             ))
         );
 
