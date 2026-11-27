@@ -256,6 +256,68 @@ impl DlssOutputTargetDesc {
     }
 }
 
+/// Decision for reusing or allocating the dedicated DLSS output texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputAllocationAction {
+    ReuseExisting,
+    AllocateNew,
+}
+
+/// Conservative allocation-planning errors. The estimate is a lower bound;
+/// the caller must still handle a real D3D12 allocation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputAllocationError {
+    BudgetUnavailable,
+    InsufficientBudget { required_bytes: u64, available_bytes: u64 },
+    BudgetEstimateOverflow,
+}
+
+/// Result of checking whether a requested output target can be allocated
+/// without exceeding the adapter's reported *available* local-memory budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssOutputAllocationPlan {
+    pub action: DlssOutputAllocationAction,
+    pub estimated_required_bytes: u64,
+    pub available_bytes: Option<u64>,
+}
+
+impl DlssOutputAllocationPlan {
+    /// Reserve 25% headroom above the pixel payload estimate for driver
+    /// allocation granularity and bookkeeping. This is a conservative
+    /// planning margin, not an exact prediction of DXGI residency cost.
+    pub fn new(
+        current: Option<DlssOutputTargetDesc>,
+        requested: DlssOutputTargetDesc,
+        available_bytes: Option<u64>,
+    ) -> Result<Self, DlssOutputAllocationError> {
+        if current == Some(requested) {
+            return Ok(Self {
+                action: DlssOutputAllocationAction::ReuseExisting,
+                estimated_required_bytes: 0,
+                available_bytes,
+            });
+        }
+        let estimated_required_bytes = requested
+            .estimated_bytes
+            .checked_mul(5)
+            .and_then(|bytes| bytes.checked_add(3))
+            .map(|bytes| bytes / 4)
+            .ok_or(DlssOutputAllocationError::BudgetEstimateOverflow)?;
+        let available = available_bytes.ok_or(DlssOutputAllocationError::BudgetUnavailable)?;
+        if estimated_required_bytes > available {
+            return Err(DlssOutputAllocationError::InsufficientBudget {
+                required_bytes: estimated_required_bytes,
+                available_bytes: available,
+            });
+        }
+        Ok(Self {
+            action: DlssOutputAllocationAction::AllocateNew,
+            estimated_required_bytes,
+            available_bytes,
+        })
+    }
+}
+
 /// Minimal resource metadata used to reject incompatible color/depth pairs
 /// before a future temporal upscaler can consume them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2059,3 +2121,64 @@ mod dlss_output_target_desc_tests {
     }
 }
 
+
+#[cfg(test)]
+mod dlss_output_allocation_policy_tests {
+    use super::{
+        DlssOutputAllocationAction as Action, DlssOutputAllocationError as Error,
+        DlssOutputAllocationPlan as Plan, DlssOutputFormat as Format,
+        DlssOutputTargetDesc as Desc,
+    };
+
+    fn target() -> Desc {
+        Desc::new(1920, 1080, Format::R8G8B8A8Unorm).unwrap()
+    }
+
+    #[test]
+    fn reuses_an_identical_target_without_needing_budget_information() {
+        let desc = target();
+        let plan = Plan::new(Some(desc), desc, None).unwrap();
+        assert_eq!(plan.action, Action::ReuseExisting);
+        assert_eq!(plan.estimated_required_bytes, 0);
+    }
+
+    #[test]
+    fn requires_a_known_budget_before_new_allocation() {
+        assert_eq!(
+            Plan::new(None, target(), None),
+            Err(Error::BudgetUnavailable)
+        );
+    }
+
+    #[test]
+    fn rejects_allocation_when_headroom_would_exceed_budget() {
+        let desc = target();
+        let required = desc.estimated_bytes * 5 / 4;
+        assert_eq!(
+            Plan::new(None, desc, Some(required - 1)),
+            Err(Error::InsufficientBudget {
+                required_bytes: required,
+                available_bytes: required - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn allows_new_allocation_when_budget_covers_headroom() {
+        let desc = target();
+        let required = desc.estimated_bytes * 5 / 4;
+        let plan = Plan::new(None, desc, Some(required)).unwrap();
+        assert_eq!(plan.action, Action::AllocateNew);
+        assert_eq!(plan.estimated_required_bytes, required);
+    }
+
+    #[test]
+    fn reallocates_when_extent_or_format_changes() {
+        let current = target();
+        let requested = Desc::new(2560, 1440, Format::R16G16B16A16Float).unwrap();
+        let required = requested.estimated_bytes * 5 / 4;
+        let plan = Plan::new(Some(current), requested, Some(required)).unwrap();
+        assert_eq!(plan.action, Action::AllocateNew);
+        assert_eq!(plan.estimated_required_bytes, required);
+    }
+}
