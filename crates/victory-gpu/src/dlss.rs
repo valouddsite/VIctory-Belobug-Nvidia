@@ -175,6 +175,51 @@ pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
     }
 }
 
+/// A frame-local registry used to associate one presented color resource
+/// with one unambiguous depth resource. Generic so its lifecycle can be
+/// tested without constructing Direct3D resources.
+#[derive(Default)]
+struct FrameCandidateRegistry<T> {
+    candidates: std::collections::HashMap<(u64, usize), Option<T>>,
+}
+
+impl<T: PartialEq> FrameCandidateRegistry<T> {
+    fn prune(&mut self, frame: u64) {
+        self.candidates
+            .retain(|(candidate_frame, _), _| *candidate_frame >= frame);
+    }
+
+    fn register(&mut self, frame: u64, color_resource: usize, candidate: T) {
+        if color_resource == 0 {
+            return;
+        }
+        self.prune(frame);
+        match self.candidates.entry((frame, color_resource)) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Some(candidate));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get().as_ref() != Some(&candidate) {
+                    entry.insert(None);
+                }
+            }
+        }
+    }
+
+    fn invalidate(&mut self, frame: u64, color_resource: usize) {
+        if color_resource == 0 {
+            return;
+        }
+        self.prune(frame);
+        self.candidates.insert((frame, color_resource), None);
+    }
+
+    fn consume(&mut self, frame: u64, color_resource: usize) -> Option<T> {
+        self.prune(frame);
+        self.candidates.remove(&(frame, color_resource)).flatten()
+    }
+}
+
 #[cfg(windows)]
 pub(crate) struct PresentedDepthCandidate {
     color: std::sync::Arc<crate::resource::HostTexture>,
@@ -182,8 +227,19 @@ pub(crate) struct PresentedDepthCandidate {
 }
 
 #[cfg(windows)]
+impl PartialEq for PresentedDepthCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.color, &other.color)
+            && std::sync::Arc::ptr_eq(&self.depth, &other.depth)
+    }
+}
+
+#[cfg(windows)]
+impl Eq for PresentedDepthCandidate {}
+
+#[cfg(windows)]
 static PRESENT_DEPTH_CANDIDATES: OnceLock<
-    std::sync::Mutex<std::collections::HashMap<(u64, usize), Option<PresentedDepthCandidate>>>,
+    std::sync::Mutex<FrameCandidateRegistry<PresentedDepthCandidate>>,
 > = OnceLock::new();
 
 /// Retain an exact color/depth pair for the frame that is about to be presented.
@@ -196,40 +252,24 @@ pub(crate) fn register_present_depth_candidate(
     color: std::sync::Arc<crate::resource::HostTexture>,
     depth: std::sync::Arc<crate::resource::HostTexture>,
 ) {
-    if color_resource == 0 {
-        return;
-    }
-    let candidates = PRESENT_DEPTH_CANDIDATES.get_or_init(Default::default);
-    let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
-    candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
-    let key = (frame, color_resource);
-    match candidates.entry(key) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(Some(PresentedDepthCandidate { color, depth }));
-        }
-        std::collections::hash_map::Entry::Occupied(mut entry) => {
-            let same_pair = entry.get().as_ref().is_some_and(|existing| {
-                std::sync::Arc::ptr_eq(&existing.color, &color)
-                    && std::sync::Arc::ptr_eq(&existing.depth, &depth)
-            });
-            if !same_pair {
-                entry.insert(None);
-            }
-        }
-    }
+    let candidates = PRESENT_DEPTH_CANDIDATES
+        .get_or_init(|| std::sync::Mutex::new(FrameCandidateRegistry::default()));
+    candidates
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register(frame, color_resource, PresentedDepthCandidate { color, depth });
 }
 
 /// Invalidate a color candidate when a later target binding has no compatible
 /// depth view. Once invalidated, another pair in the same frame stays ambiguous.
 #[cfg(windows)]
 pub(crate) fn invalidate_present_depth_candidate(frame: u64, color_resource: usize) {
-    if color_resource == 0 {
-        return;
-    }
-    let candidates = PRESENT_DEPTH_CANDIDATES.get_or_init(Default::default);
-    let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
-    candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
-    candidates.insert((frame, color_resource), None);
+    let candidates = PRESENT_DEPTH_CANDIDATES
+        .get_or_init(|| std::sync::Mutex::new(FrameCandidateRegistry::default()));
+    candidates
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .invalidate(frame, color_resource);
 }
 
 /// Consume a candidate only when the exact guest color resource is presented
@@ -240,11 +280,10 @@ pub(crate) fn consume_present_depth_candidate(
     color_resource: usize,
 ) -> Option<PresentedDepthCandidate> {
     let candidates = PRESENT_DEPTH_CANDIDATES.get()?;
-    let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
-    candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
-    let Some(Some(candidate)) = candidates.remove(&(frame, color_resource)) else {
-        return None;
-    };
+    let candidate = candidates
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .consume(frame, color_resource)?;
     static REPORTED: OnceLock<()> = OnceLock::new();
     REPORTED.get_or_init(|| {
         tracing::info!(
@@ -252,6 +291,60 @@ pub(crate) fn consume_present_depth_candidate(
         );
     });
     Some(candidate)
+}
+
+#[cfg(test)]
+mod candidate_registry_tests {
+    use super::FrameCandidateRegistry;
+
+    #[test]
+    fn exact_color_depth_pair_is_consumed_only_in_its_frame() {
+        let mut registry = FrameCandidateRegistry::default();
+        registry.register(10, 0x100, 0x200_u64);
+
+        assert_eq!(registry.consume(9, 0x100), None);
+        assert_eq!(registry.consume(10, 0x101), None);
+        assert_eq!(registry.consume(10, 0x100), Some(0x200));
+        assert_eq!(registry.consume(10, 0x100), None);
+    }
+
+    #[test]
+    fn conflicting_depth_pairs_are_rejected() {
+        let mut registry = FrameCandidateRegistry::default();
+        registry.register(20, 0x100, 0x200_u64);
+        registry.register(20, 0x100, 0x201_u64);
+
+        assert_eq!(registry.consume(20, 0x100), None);
+    }
+
+    #[test]
+    fn repeated_identical_pair_remains_unambiguous() {
+        let mut registry = FrameCandidateRegistry::default();
+        registry.register(30, 0x100, 0x200_u64);
+        registry.register(30, 0x100, 0x200_u64);
+
+        assert_eq!(registry.consume(30, 0x100), Some(0x200));
+    }
+
+    #[test]
+    fn invalidation_is_sticky_for_the_frame() {
+        let mut registry = FrameCandidateRegistry::default();
+        registry.register(40, 0x100, 0x200_u64);
+        registry.invalidate(40, 0x100);
+        registry.register(40, 0x100, 0x200_u64);
+
+        assert_eq!(registry.consume(40, 0x100), None);
+    }
+
+    #[test]
+    fn stale_frames_are_pruned_without_removing_future_frames() {
+        let mut registry = FrameCandidateRegistry::default();
+        registry.register(50, 0x100, 0x200_u64);
+        registry.register(51, 0x100, 0x201_u64);
+
+        assert_eq!(registry.consume(51, 0x100), Some(0x201));
+        assert_eq!(registry.consume(50, 0x100), None);
+    }
 }
 
 /// Current backend state. DLSS stays unavailable until Streamline is linked,
