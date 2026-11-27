@@ -620,6 +620,57 @@ pub fn plan_shader_read_transition(
     })
 }
 
+/// Validate the identity and completion metadata before proposing a transition
+/// into D3D12_UNORDERED_ACCESS. This does not record a barrier or prove
+/// cross-queue ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnorderedAccessTransitionError {
+    NullResource,
+    NullRecordingList,
+    RecordingListMismatch,
+    Unsubmitted,
+    SubmissionNotCompleted,
+    UnknownBeforeState,
+}
+
+/// CPU-only proposal for making the dedicated DLSS output available as a UAV.
+pub fn plan_unordered_access_transition(
+    resource_id: usize,
+    recording_list: usize,
+    expected_recording_list: usize,
+    submission: u64,
+    finished_submission: u64,
+    before_state: u32,
+) -> Result<ShaderReadTransitionPlan, UnorderedAccessTransitionError> {
+    const UNORDERED_ACCESS: u32 = 0x8;
+    if resource_id == 0 {
+        return Err(UnorderedAccessTransitionError::NullResource);
+    }
+    if recording_list == 0 || expected_recording_list == 0 {
+        return Err(UnorderedAccessTransitionError::NullRecordingList);
+    }
+    if recording_list != expected_recording_list {
+        return Err(UnorderedAccessTransitionError::RecordingListMismatch);
+    }
+    if submission == 0 {
+        return Err(UnorderedAccessTransitionError::Unsubmitted);
+    }
+    if submission > finished_submission {
+        return Err(UnorderedAccessTransitionError::SubmissionNotCompleted);
+    }
+    if matches!(classify_host_resource_state(before_state), HostResourceStateClass::Unknown) {
+        return Err(UnorderedAccessTransitionError::UnknownBeforeState);
+    }
+    Ok(ShaderReadTransitionPlan {
+        resource_id,
+        before_state,
+        after_state: UNORDERED_ACCESS,
+        recording_list,
+        submission,
+        barrier_required: before_state != UNORDERED_ACCESS,
+    })
+}
+
 /// All CPU-side evidence required before a future Streamline DLSS SR call.
 ///
 /// The resource identifiers and state values must come from the exact completed
@@ -651,6 +702,8 @@ pub struct DlssEvaluationInputs {
     pub color_before_state: u32,
     pub depth_before_state: u32,
     pub motion_vectors_before_state: u32,
+    /// Tracked state of the dedicated output resource before DLSS evaluation.
+    pub output_before_state: u32,
 }
 
 /// Why a future DLSS evaluation cannot be prepared from this frame.
@@ -671,6 +724,7 @@ pub enum DlssEvaluationPlanError {
     AliasedResources,
     InvalidTemporalMetadata(TemporalMetadataError),
     InvalidResourceTransition(ShaderReadTransitionError),
+    InvalidOutputTransition(UnorderedAccessTransitionError),
 }
 
 /// Validated CPU-side input and transition proposal for one DLSS frame.
@@ -687,6 +741,7 @@ pub struct DlssEvaluationPlan {
     pub color_transition: ShaderReadTransitionPlan,
     pub depth_transition: ShaderReadTransitionPlan,
     pub motion_vectors_transition: ShaderReadTransitionPlan,
+    pub output_transition: ShaderReadTransitionPlan,
 }
 
 /// Assemble a conservative evaluation plan for a single completed frame.
@@ -838,6 +893,15 @@ pub fn plan_dlss_evaluation(
             inputs.motion_vectors_before_state,
             SHADER_READ,
         )?,
+        output_transition: plan_unordered_access_transition(
+            inputs.output_resource_id,
+            inputs.recording_list,
+            inputs.expected_recording_list,
+            inputs.submission,
+            inputs.finished_submission,
+            inputs.output_before_state,
+        )
+        .map_err(DlssEvaluationPlanError::InvalidOutputTransition)?,
     })
 }
 
@@ -899,6 +963,7 @@ mod dlss_evaluation_plan_tests {
             color_before_state: 0x4,
             depth_before_state: 0x10,
             motion_vectors_before_state: 0x8,
+            output_before_state: 0,
         }
     }
 
@@ -912,8 +977,32 @@ mod dlss_evaluation_plan_tests {
         assert_eq!(plan.color_transition.after_state, 0xC0);
         assert_eq!(plan.depth_transition.after_state, 0xE0);
         assert_eq!(plan.motion_vectors_transition.after_state, 0xC0);
+        assert_eq!(plan.output_transition.after_state, 0x8);
+        assert_eq!(plan.output_transition.resource_id, 0x400);
+        assert!(plan.output_transition.barrier_required);
         assert!(plan.color_transition.barrier_required);
         assert!(!plan.reset_history);
+    }
+
+    #[test]
+    fn output_transition_requires_known_state_and_completed_exact_submission() {
+        let mut inputs = valid_inputs();
+        inputs.output_before_state = 0x8000_0000;
+        assert!(matches!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidOutputTransition(
+                super::UnorderedAccessTransitionError::UnknownBeforeState
+            ))
+        ));
+
+        let mut inputs = valid_inputs();
+        inputs.finished_submission = inputs.submission - 1;
+        assert!(matches!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidOutputTransition(
+                super::UnorderedAccessTransitionError::SubmissionNotCompleted
+            ))
+        ));
     }
 
     #[test]
