@@ -118,22 +118,23 @@ pub const fn backend_state() -> BackendState {
 /// Warn once if a user explicitly requests DLSS. The current frame path
 /// remains unchanged and is presented normally.
 pub fn report_requested_but_unavailable() {
-    static REPORTED: OnceLock<()> = OnceLock::new();
-    let requested = std::env::var_os("VICTORY_DLSS")
-        .is_some_and(|value| value != "0" && !value.is_empty());
-    if !requested {
-        return;
-    }
-    REPORTED.get_or_init(|| {
-        let quality = std::env::var("VICTORY_DLSS_QUALITY")
-            .ok()
-            .and_then(|value| Quality::parse(&value))
-            .unwrap_or_default();
+    static REQUESTED_QUALITY: OnceLock<Option<Quality>> = OnceLock::new();
+    let requested = *REQUESTED_QUALITY.get_or_init(|| {
+        let enabled = std::env::var_os("VICTORY_DLSS")
+            .is_some_and(|value| value != "0" && !value.is_empty());
+        enabled.then(|| {
+            std::env::var("VICTORY_DLSS_QUALITY")
+                .ok()
+                .and_then(|value| Quality::parse(&value))
+                .unwrap_or_default()
+        })
+    });
+    if let Some(quality) = requested {
         tracing::warn!(
             ?quality,
             "DLSS was requested but is NOT active: Streamline is not integrated and the renderer does not yet provide verified depth, motion-vector and jitter inputs; using the normal presentation path"
         );
-    });
+    }
 }
 
 #[cfg(test)]
