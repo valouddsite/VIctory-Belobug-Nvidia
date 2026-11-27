@@ -1014,6 +1014,23 @@ mod tests {
     }
 
     #[test]
+    fn early_pipeline_tracking_respects_global_limit() {
+        let used = UsedPipelines::empty();
+        for index in 0..EARLY_MAX {
+            let key = format!("{index:032x}");
+            assert!(used.insert(&key));
+        }
+        let overflow = format!("{:032x}", EARLY_MAX);
+        assert!(!used.insert(&overflow));
+        assert_eq!(used.len.load(Ordering::Relaxed), EARLY_MAX);
+        assert_eq!(used.snapshot().len(), EARLY_MAX);
+
+        // A duplicate remains rejected even after the cap has been reached.
+        assert!(!used.insert("00000000000000000000000000000000"));
+        assert_eq!(used.len.load(Ordering::Relaxed), EARLY_MAX);
+    }
+
+    #[test]
     fn early_pipeline_tracking_keeps_concurrent_inserts() {
         let used = std::sync::Arc::new(UsedPipelines::empty());
         let workers: Vec<_> = (0..8u32)
