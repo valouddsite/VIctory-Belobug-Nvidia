@@ -1115,9 +1115,9 @@ fn show_planes(
     let Some(host) = crate::host::host() else {
         return;
     };
-    if what.resource != 0 {
-        let _ = crate::dlss::consume_present_depth_candidate(what.frame, what.resource);
-    }
+    let _depth_candidate = (what.resource != 0)
+        .then(|| crate::dlss::consume_present_depth_candidate(what.frame, what.resource))
+        .flatten();
     let shown = host.present_planes(texture, state, overlay, what.frame);
     #[cfg(feature = "diagnostics")]
     blinks(what.frame, what.resource as This, state, shown);
