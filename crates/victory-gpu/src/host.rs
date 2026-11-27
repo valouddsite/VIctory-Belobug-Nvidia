@@ -9275,13 +9275,15 @@ impl Host {
                 std::mem::size_of_val(&format_support) as u32,
             )?;
         }
-        if format_support.Support1.0
-            & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW.0
-            == 0
-        {
+        let required_format_support = D3D12_FORMAT_SUPPORT1_TEXTURE2D.0
+            | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW.0;
+        let missing_format_support = required_format_support & !format_support.Support1.0;
+        if missing_format_support != 0 {
             tracing::warn!(
                 format = resource_desc.Format.0,
-                "refusing DLSS output format: adapter does not support typed UAV views"
+                support1 = format_support.Support1.0,
+                missing = missing_format_support,
+                "refusing DLSS output format: adapter lacks required 2D typed-UAV support"
             );
             return Err(windows::core::Error::empty());
         }
