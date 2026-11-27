@@ -1,0 +1,85 @@
+name: Windows test package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release/rtx-5060-test]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-test-package-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Build Windows x64 test package
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run workspace tests
+        run: cargo test --workspace --locked -- --test-threads=1
+
+      - name: Build optimized Windows executable
+        run: cargo build --locked --release -p victory
+
+      - name: Assemble test package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = 'dist/VIctory-RTX5060-Windows-x64'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item 'target/release/victory.exe' $package
+          Copy-Item 'victory.example.toml' $package
+          New-Item -ItemType Directory -Force -Path "$package/scripts" | Out-Null
+          Copy-Item 'scripts/play.ps1' "$package/scripts/"
+          @'
+          VIctory - NVIDIA RTX 5060 test package
+
+          This is an experimental Windows x64 build. It is not a validated RTX 5060 release.
+          Requirements: Windows 10/11 x64, AVX2 CPU, Direct3D 12 GPU with Shader Model 6.6
+          and mesh-shader support, current NVIDIA driver, and the MSVC runtime/build dependencies
+          required by the project.
+
+          QUICK START
+          1. Extract this folder somewhere writable.
+          2. Copy victory.example.toml to victory.toml.
+          3. Edit [paths].game_dir to point to your own legally obtained game files.
+          4. Open PowerShell in this folder.
+          5. Run:
+             .\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build release
+
+          Start with the safe profile if rendering or stability problems occur:
+             .\scripts\play.ps1 -Exe "D:\path\to\your\game.exe" -Build release -Safe
+
+          Keep your game files outside this package. No game files or proprietary assets are included.
+          Back up saves before testing. Do not run PowerShell as Administrator.
+          Report the GPU/driver, game build, settings, log and exact reproduction steps when reporting
+          a problem. Do not share game files, keys, or personal data.
+
+          This build has passed automated Windows CI only. Actual RTX 5060 rendering, stability,
+          VRAM use and frame rate must be tested on physical hardware.
+          '@ | Set-Content -Encoding utf8 "$package/TEST-ON-YOUR-PC.txt"
+          Compress-Archive -Path "$package/*" -DestinationPath 'dist/VIctory-RTX5060-Windows-x64.zip' -Force
+          if (-not (Test-Path 'dist/VIctory-RTX5060-Windows-x64.zip')) { throw 'Package ZIP was not created.' }
+
+      - name: Upload Windows test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: VIctory-RTX5060-Windows-x64
+          path: dist/VIctory-RTX5060-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
