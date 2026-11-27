@@ -269,6 +269,20 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_keys_match_concatenated_keys_without_changing_converter_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(tmp.path().join("cache")).unwrap();
+        let conv = Upper { version: 1, runs: AtomicUsize::new(0) };
+        let prefixed = CacheKey::new_with_prefix(&conv, b"pre", b"fix");
+        let joined = CacheKey::new(&conv, b"prefix");
+        assert_eq!(prefixed, joined);
+
+        let path = cache.get_or_convert_with_prefix(&conv, b"pre", b"fix").unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"FIX");
+        assert_eq!(conv.runs.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn version_bump_invalidates() {
         let v1 = Upper {
             version: 1,
