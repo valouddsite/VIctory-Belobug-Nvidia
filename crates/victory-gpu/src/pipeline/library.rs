@@ -250,7 +250,19 @@ static REPLACED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 /// The library calls running now: thread, what (load, make, store,
 /// serialise), the pipeline, and since when (`crate::host::now_us`).
-static CALLS: Mutex<Vec<(u32, &'static str, String, u64)>> = Mutex::new(Vec::new());
+/// Active pipeline-library calls are split by worker thread so that
+/// unrelated workers do not serialize on one diagnostics mutex.
+const CALL_SHARDS: usize = 64;
+type ActiveCall = (u32, &'static str, String, u64);
+static CALLS: [Mutex<Vec<ActiveCall>>; CALL_SHARDS] =
+    [const { Mutex::new(Vec::new()) }; CALL_SHARDS];
+
+fn call_shard(thread: u32) -> usize {
+    // Multiplicative hashing uses the high bits to spread sequential OS
+    // thread IDs across shards (thread IDs are commonly aligned values).
+    ((u64::from(thread).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - 6)) as usize)
+        % CALL_SHARDS
+}
 
 thread_local! {
     /// The pipeline this thread is making (its shaders), for [`CALLS`].
@@ -262,25 +274,30 @@ pub(crate) fn label(text: String) {
     LABEL.with(|l| *l.borrow_mut() = text);
 }
 
-/// A library call of this thread, listed in [`CALLS`] until dropped.
-struct Call(u32, u64);
+/// A library call of this thread, listed in its shard until dropped.
+struct Call {
+    shard: usize,
+    thread: u32,
+    since: u64,
+}
 
 fn call(what: &'static str, name: &str) -> Call {
     let (thread, since) = (crate::host::thread_id(), crate::host::now_us());
+    let shard = call_shard(thread);
     let label = LABEL.with(|l| l.borrow().clone());
-    CALLS
+    CALLS[shard]
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push((thread, what, format!("{name} {label}"), since));
-    Call(thread, since)
+    Call { shard, thread, since }
 }
 
 impl Drop for Call {
     fn drop(&mut self) {
-        CALLS
+        CALLS[self.shard]
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|c| (c.0, c.3) != (self.0, self.1));
+            .retain(|c| (c.0, c.3) != (self.thread, self.since));
     }
 }
 
@@ -296,17 +313,20 @@ pub(crate) fn removal_note() -> String {
     let now = crate::host::now_us();
     let mut text = String::from("pipeline library: ");
     {
-        let calls = CALLS.lock().unwrap_or_else(|e| e.into_inner());
-        if calls.is_empty() {
-            text.push_str("no call running");
+        let mut first = true;
+        for shard in &CALLS {
+            let calls = shard.lock().unwrap_or_else(|e| e.into_inner());
+            for (thread, what, name, since) in calls.iter() {
+                let _ = write!(
+                    text,
+                    "{}{what} of {name} running for {:.1} ms on thread {thread}",
+                    if first { first = false; "" } else { ", " },
+                    now.saturating_sub(*since) as f64 / 1000.0
+                );
+            }
         }
-        for (i, (thread, what, name, since)) in calls.iter().enumerate() {
-            let _ = write!(
-                text,
-                "{}{what} of {name} running for {:.1} ms on thread {thread}",
-                if i == 0 { "" } else { ", " },
-                now.saturating_sub(*since) as f64 / 1000.0
-            );
+        if first {
+            text.push_str("no call running");
         }
     }
     let (at, len) = (VIEW[0].load(Ordering::Relaxed), VIEW[1].load(Ordering::Relaxed));
@@ -824,6 +844,17 @@ pub(crate) fn note_used(key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_call_tracking_shards_spread_worker_ids() {
+        let shards: HashSet<_> = (1..=4096u32).map(call_shard).collect();
+        assert_eq!(CALL_SHARDS, 64);
+        assert_eq!(
+            shards.len(),
+            CALL_SHARDS,
+            "worker IDs should cover every diagnostics shard"
+        );
+    }
 
     #[test]
     fn pipeline_load_locks_are_spread_by_digest_suffix() {
