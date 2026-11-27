@@ -79,6 +79,87 @@ impl FrameInputs {
     }
 }
 
+/// Units used by the renderer when it writes motion-vector components.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionVectorUnits {
+    /// Motion vectors are expressed in render-resolution pixels.
+    Pixels,
+    /// Motion vectors are normalized to the render extent.
+    Normalized,
+}
+
+/// Direction of the motion-vector displacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionVectorDirection {
+    /// Vector points from the current pixel to its previous-frame location.
+    CurrentToPrevious,
+    /// Vector points from the previous-frame pixel to its current location.
+    PreviousToCurrent,
+}
+
+/// Per-frame metadata needed before motion vectors and jitter can be tagged
+/// for a future Streamline DLSS SR evaluation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalFrameMetadata {
+    pub render_width: u32,
+    pub render_height: u32,
+    pub motion_vector_width: u32,
+    pub motion_vector_height: u32,
+    pub motion_vector_scale_x: f32,
+    pub motion_vector_scale_y: f32,
+    /// Sub-pixel projection jitter in render-pixel units.
+    pub jitter_x_pixels: f32,
+    pub jitter_y_pixels: f32,
+    pub motion_vector_units: MotionVectorUnits,
+    pub motion_vector_direction: MotionVectorDirection,
+    /// Must be false after camera cuts, resize or any temporal-history reset.
+    pub previous_frame_valid: bool,
+}
+
+/// Rejection reasons for incomplete or ambiguous temporal metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalMetadataError {
+    ZeroRenderExtent,
+    ZeroMotionVectorExtent,
+    MotionVectorExtentMismatch,
+    InvalidMotionVectorScale,
+    InvalidJitter,
+    MissingPreviousFrame,
+}
+
+/// Validate metadata without guessing motion-vector conventions or modifying
+/// renderer resources. This is a CPU-side contract, not proof that the supplied
+/// vectors are accurate or that a previous-frame history texture exists.
+pub fn validate_temporal_frame_metadata(
+    metadata: TemporalFrameMetadata,
+) -> Result<(), TemporalMetadataError> {
+    if metadata.render_width == 0 || metadata.render_height == 0 {
+        return Err(TemporalMetadataError::ZeroRenderExtent);
+    }
+    if metadata.motion_vector_width == 0 || metadata.motion_vector_height == 0 {
+        return Err(TemporalMetadataError::ZeroMotionVectorExtent);
+    }
+    if metadata.motion_vector_width != metadata.render_width
+        || metadata.motion_vector_height != metadata.render_height
+    {
+        return Err(TemporalMetadataError::MotionVectorExtentMismatch);
+    }
+    if !metadata.motion_vector_scale_x.is_finite()
+        || !metadata.motion_vector_scale_y.is_finite()
+        || metadata.motion_vector_scale_x == 0.0
+        || metadata.motion_vector_scale_y == 0.0
+    {
+        return Err(TemporalMetadataError::InvalidMotionVectorScale);
+    }
+    if !metadata.jitter_x_pixels.is_finite() || !metadata.jitter_y_pixels.is_finite() {
+        return Err(TemporalMetadataError::InvalidJitter);
+    }
+    if !metadata.previous_frame_valid {
+        return Err(TemporalMetadataError::MissingPreviousFrame);
+    }
+    Ok(())
+}
+
 /// Resolution plan for a future DLSS pass. This does not resize resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolutionPlan {
@@ -861,3 +942,96 @@ mod shader_read_transition_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod temporal_metadata_tests {
+    use super::{
+        validate_temporal_frame_metadata, MotionVectorDirection, MotionVectorUnits,
+        TemporalFrameMetadata, TemporalMetadataError as Error,
+    };
+
+    fn valid_metadata() -> TemporalFrameMetadata {
+        TemporalFrameMetadata {
+            render_width: 1920,
+            render_height: 1080,
+            motion_vector_width: 1920,
+            motion_vector_height: 1080,
+            motion_vector_scale_x: 1.0,
+            motion_vector_scale_y: 1.0,
+            jitter_x_pixels: 0.25,
+            jitter_y_pixels: -0.25,
+            motion_vector_units: MotionVectorUnits::Pixels,
+            motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
+            previous_frame_valid: true,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_finite_temporal_metadata() {
+        assert_eq!(validate_temporal_frame_metadata(valid_metadata()), Ok(()));
+    }
+
+    #[test]
+    fn rejects_zero_render_or_motion_vector_extent() {
+        let mut metadata = valid_metadata();
+        metadata.render_width = 0;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Err(Error::ZeroRenderExtent));
+
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_height = 0;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Err(Error::ZeroMotionVectorExtent));
+    }
+
+    #[test]
+    fn rejects_motion_vector_extent_mismatch() {
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_width = 960;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::MotionVectorExtentMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_zero_or_non_finite_motion_vector_scale() {
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_scale_x = 0.0;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::InvalidMotionVectorScale)
+        );
+
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_scale_y = f32::INFINITY;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::InvalidMotionVectorScale)
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_jitter() {
+        let mut metadata = valid_metadata();
+        metadata.jitter_x_pixels = f32::NAN;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Err(Error::InvalidJitter));
+    }
+
+    #[test]
+    fn rejects_missing_previous_frame_history() {
+        let mut metadata = valid_metadata();
+        metadata.previous_frame_valid = false;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::MissingPreviousFrame)
+        );
+    }
+
+    #[test]
+    fn accepts_explicit_normalized_vectors_and_reverse_direction() {
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_units = MotionVectorUnits::Normalized;
+        metadata.motion_vector_direction = MotionVectorDirection::PreviousToCurrent;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Ok(()));
+    }
+}
