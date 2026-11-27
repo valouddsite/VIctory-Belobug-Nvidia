@@ -1214,6 +1214,7 @@ impl State {
                             color_key,
                             color_copy,
                             depth_copy,
+                            list as *const HostList as usize,
                         );
                     } else {
                         crate::dlss::invalidate_present_depth_candidate(candidate_frame, color_key);
