@@ -176,7 +176,7 @@ pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
 }
 
 #[cfg(windows)]
-pub(crate) pub(crate) struct PresentedDepthCandidate {
+pub(crate) struct PresentedDepthCandidate {
     color: std::sync::Arc<crate::resource::HostTexture>,
     depth: std::sync::Arc<crate::resource::HostTexture>,
 }
