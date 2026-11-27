@@ -176,7 +176,7 @@ pub(crate) fn report_depth_pair_status(status: DepthPairStatus) {
 }
 
 #[cfg(windows)]
-pub(crate) struct PresentedDepthCandidate {
+pub(crate) pub(crate) struct PresentedDepthCandidate {
     color: std::sync::Arc<crate::resource::HostTexture>,
     depth: std::sync::Arc<crate::resource::HostTexture>,
 }
@@ -219,8 +219,21 @@ pub(crate) fn register_present_depth_candidate(
     }
 }
 
+/// Invalidate a color candidate when a later target binding has no compatible
+/// depth view. Once invalidated, another pair in the same frame stays ambiguous.
+#[cfg(windows)]
+pub(crate) fn invalidate_present_depth_candidate(frame: u64, color_resource: usize) {
+    if color_resource == 0 {
+        return;
+    }
+    let candidates = PRESENT_DEPTH_CANDIDATES.get_or_init(Default::default);
+    let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
+    candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
+    candidates.insert((frame, color_resource), None);
+}
+
 /// Consume a candidate only when the exact guest color resource is presented
-/// in the same frame. The retained host resources are released afterwards.
+/// in the same frame. The caller holds the returned resources through Present.
 #[cfg(windows)]
 pub(crate) fn consume_present_depth_candidate(
     frame: u64,
