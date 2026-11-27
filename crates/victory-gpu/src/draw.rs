@@ -1193,16 +1193,16 @@ impl State {
                         width: color_desc.Width as u32,
                         height: color_desc.Height,
                         samples: color_desc.SampleDesc.Count,
-                        dimension: color_desc.Dimension.0,
+                        dimension: color_desc.Dimension.0 as u32,
                     },
                     crate::dlss::TextureInfo {
                         width: depth_desc.Width as u32,
                         height: depth_desc.Height,
                         samples: depth_desc.SampleDesc.Count,
-                        dimension: depth_desc.Dimension.0,
+                        dimension: depth_desc.Dimension.0 as u32,
                     },
-                    view.Format.0,
-                    view.ViewDimension.0,
+                    view.Format.0 as u32,
+                    view.ViewDimension.0 as u32,
                 ));
             }
         }
