@@ -431,14 +431,19 @@ fn load_lock_index(name: &str) -> usize {
     }
 
     let bytes = name.as_bytes();
-    if bytes.len() >= 2 {
-        if let (Some(high), Some(low)) = (nibble(bytes[bytes.len() - 2]), nibble(bytes[bytes.len() - 1])) {
-            return high * 16 + low;
-        }
+    if bytes.len() >= 2
+        && let (Some(high), Some(low)) = (
+            nibble(bytes[bytes.len() - 2]),
+            nibble(bytes[bytes.len() - 1]),
+        )
+    {
+        return high * 16 + low;
     }
 
     // Defensive fallback for non-hex names (production names are digests).
-    bytes.iter().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(usize::from(*b))) % LOAD_LOCKS
+    bytes.iter().fold(0usize, |h, b| {
+        h.wrapping_mul(31).wrapping_add(usize::from(*b))
+    }) % LOAD_LOCKS
 }
 
 /// Loads of the same pipeline name wait for each other (the host's one
@@ -823,12 +828,26 @@ mod tests {
     #[test]
     fn pipeline_load_locks_are_spread_by_digest_suffix() {
         let buckets: HashSet<_> = (0..4096u32)
-            .map(|i| load_lock_index(&name("graphics", &i.to_le_bytes(), &[b"vs"], "state")))
+            .map(|i| {
+                load_lock_index(&name(
+                    "graphics",
+                    &i.to_le_bytes(),
+                    &[b"vs"],
+                    "state",
+                ))
+            })
             .collect();
         assert_eq!(LOAD_LOCKS, 256);
-        assert!(buckets.len() >= 240, "only {} of 256 lock stripes were used", buckets.len());
+        assert!(
+            buckets.len() >= 240,
+            "only {} of 256 lock stripes were used",
+            buckets.len()
+        );
         let bytes = b"not-a-hex-name";
-        let fallback = bytes.iter().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(usize::from(*b))) % LOAD_LOCKS;
+        let fallback = bytes
+            .iter()
+            .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(usize::from(*b)))
+            % LOAD_LOCKS;
         assert_eq!(load_lock_index("not-a-hex-name"), fallback);
     }
 
