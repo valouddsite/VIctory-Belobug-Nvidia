@@ -1184,36 +1184,40 @@ impl State {
                 crate::dlss::invalidate_present_depth_candidate(candidate_frame, color_key);
                 continue;
             };
-            let Some((_, depth_record)) = dsv.as_ref()
-                && let Some(depth_view) = depth_record.depth_desc()
-                && let Some(depth_copy) = crate::resource::host_copy(depth_record.resource)
-            {
-                let color_desc = unsafe { color_copy.texture.GetDesc() };
-                let depth_desc = unsafe { depth_copy.texture.GetDesc() };
-                let status = crate::dlss::validate_depth_pair(
-                    crate::dlss::TextureInfo {
-                        width: color_desc.Width as u32,
-                        height: color_desc.Height,
-                        samples: color_desc.SampleDesc.Count,
-                        dimension: color_desc.Dimension.0 as u32,
-                    },
-                    crate::dlss::TextureInfo {
-                        width: depth_desc.Width as u32,
-                        height: depth_desc.Height,
-                        samples: depth_desc.SampleDesc.Count,
-                        dimension: depth_desc.Dimension.0 as u32,
-                    },
-                    depth_view.Format.0 as u32,
-                    depth_view.ViewDimension.0 as u32,
-                );
-                crate::dlss::report_depth_pair_status(status);
-                if status == crate::dlss::DepthPairStatus::Compatible {
-                    crate::dlss::register_present_depth_candidate(
-                        candidate_frame,
-                        color_key,
-                        color_copy,
-                        depth_copy,
+            let depth_binding = dsv.as_ref().and_then(|(_, record)| {
+                record.depth_desc().map(|view| (record, view))
+            });
+            if let Some((depth_record, depth_view)) = depth_binding {
+                if let Some(depth_copy) = crate::resource::host_copy(depth_record.resource) {
+                    let color_desc = unsafe { color_copy.texture.GetDesc() };
+                    let depth_desc = unsafe { depth_copy.texture.GetDesc() };
+                    let status = crate::dlss::validate_depth_pair(
+                        crate::dlss::TextureInfo {
+                            width: color_desc.Width as u32,
+                            height: color_desc.Height,
+                            samples: color_desc.SampleDesc.Count,
+                            dimension: color_desc.Dimension.0 as u32,
+                        },
+                        crate::dlss::TextureInfo {
+                            width: depth_desc.Width as u32,
+                            height: depth_desc.Height,
+                            samples: depth_desc.SampleDesc.Count,
+                            dimension: depth_desc.Dimension.0 as u32,
+                        },
+                        depth_view.Format.0 as u32,
+                        depth_view.ViewDimension.0 as u32,
                     );
+                    crate::dlss::report_depth_pair_status(status);
+                    if status == crate::dlss::DepthPairStatus::Compatible {
+                        crate::dlss::register_present_depth_candidate(
+                            candidate_frame,
+                            color_key,
+                            color_copy,
+                            depth_copy,
+                        );
+                    } else {
+                        crate::dlss::invalidate_present_depth_candidate(candidate_frame, color_key);
+                    }
                 } else {
                     crate::dlss::invalidate_present_depth_candidate(candidate_frame, color_key);
                 }
