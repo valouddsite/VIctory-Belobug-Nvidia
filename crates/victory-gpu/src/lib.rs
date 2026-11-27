@@ -36,6 +36,7 @@ mod faultbook;
 mod cores;
 pub mod descriptor;
 pub mod device;
+pub mod dlss;
 #[cfg(windows)]
 mod draw;
 pub mod dxgi;
