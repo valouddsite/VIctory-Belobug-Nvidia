@@ -24,6 +24,8 @@ struct Arena {
     at: usize,
     /// Per block whether it is handed out.
     taken: Vec<bool>,
+    /// Preferred first-fit search position; freed blocks move it backwards.
+    cursor: usize,
 }
 
 static ARENAS: Mutex<Vec<Arena>> = Mutex::new(Vec::new());
@@ -43,15 +45,23 @@ fn low() -> bool {
 }
 
 /// The first place of `n` free blocks side by side.
-fn gap(taken: &[bool], n: usize) -> Option<usize> {
+fn gap_from(taken: &[bool], n: usize, start: usize) -> Option<usize> {
+    if n == 0 || start >= taken.len() {
+        return None;
+    }
     let mut free = 0;
-    for (i, &t) in taken.iter().enumerate() {
+    for (offset, &t) in taken[start..].iter().enumerate() {
         free = if t { 0 } else { free + 1 };
         if free == n {
-            return Some(i + 1 - n);
+            return Some(start + offset + 1 - n);
         }
     }
     None
+}
+
+/// The first place of `n` free blocks side by side.
+fn gap(taken: &[bool], n: usize) -> Option<usize> {
+    gap_from(taken, n, 0)
 }
 
 /// Fresh zeroed memory in [4 GiB, 2^37) (where the directory of memory by
@@ -94,7 +104,9 @@ impl Upload {
         }
         let n = len.max(1).div_ceil(BLOCK);
         let mut arenas = ARENAS.lock().unwrap_or_else(|e| e.into_inner());
-        let found = arenas.iter().enumerate().find_map(|(a, arena)| Some((a, gap(&arena.taken, n)?)));
+        let found = arenas.iter().enumerate().find_map(|(a, arena)| {
+            Some((a, gap_from(&arena.taken, n, arena.cursor).or_else(|| gap(&arena.taken, n))?))
+        });
         let (a, first) = match found {
             Some(place) => place,
             None => {
@@ -102,12 +114,13 @@ impl Upload {
                 let at = reserve(blocks * BLOCK)?;
                 crate::shadow::register(at, at as u64, (blocks * BLOCK) as u64);
                 tracing::info!(at = format_args!("{at:#x}"), bytes = blocks * BLOCK, "memory for lists' uploads, where shaders reach it by address");
-                arenas.push(Arena { at, taken: vec![false; blocks] });
+                arenas.push(Arena { at, taken: vec![false; blocks], cursor: 0 });
                 (arenas.len() - 1, 0)
             }
         };
         let arena = &mut arenas[a];
         arena.taken[first..first + n].fill(true);
+        arena.cursor = (first + n) % arena.taken.len();
         let at = arena.at + first * BLOCK;
         // The blocks are marked taken, so their ownership no longer depends
         // on the arena lock. Zero them after releasing it: large uploads must
@@ -133,6 +146,7 @@ impl Drop for Upload {
         if let Some(arena) = arenas.iter_mut().find(|a| (a.at..a.at + a.taken.len() * BLOCK).contains(&at)) {
             let first = (at - arena.at) / BLOCK;
             arena.taken[first..first + len.max(1).div_ceil(BLOCK)].fill(false);
+            arena.cursor = arena.cursor.min(first);
         }
     }
 }
@@ -178,5 +192,9 @@ mod tests {
         assert_eq!(gap(&[true, false, true, false, false, true], 1), Some(1));
         assert_eq!(gap(&[true, false, true, false, false, true], 2), Some(3));
         assert_eq!(gap(&[true, false, true, false, false, true], 3), None);
+        assert_eq!(gap_from(&[true, true, false, false, true, false], 2, 2), Some(2));
+        assert_eq!(gap_from(&[false, false, true, true, false, false], 2, 4), Some(4));
+        assert_eq!(gap_from(&[false, false, true, true, false, false], 2, 2), None);
+        assert_eq!(gap(&[false, false, true, true, false, false], 2), Some(0));
     }
 }
