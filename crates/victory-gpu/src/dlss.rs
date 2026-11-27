@@ -817,7 +817,7 @@ pub fn plan_dlss_evaluation(
 #[cfg(test)]
 mod dlss_evaluation_plan_tests {
     use super::{
-        plan_dlss_evaluation, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
+        plan_dlss_evaluation, DepthPairStatus, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
         FrameInputs, MotionVectorDirection, MotionVectorUnits, ResolutionPlan,
         TextureInfo, TemporalFrameMetadata, TemporalHistoryResetReason as Reset, TemporalMetadataError,
         TemporalHistoryTracker as Tracker, ShaderReadTransitionError,
