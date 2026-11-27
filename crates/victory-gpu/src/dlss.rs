@@ -318,6 +318,137 @@ impl DlssOutputAllocationPlan {
     }
 }
 
+/// Safe CPU-side decision for using or replacing a dedicated DLSS output target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputTargetUseAction {
+    /// The matching resource's previous GPU use has completed.
+    ReuseNow,
+    /// The matching resource is still in use; wait for this submission fence value.
+    WaitForSubmission,
+    /// Allocate a replacement and retire the old resource only after its last use.
+    AllocateReplacement,
+}
+
+/// Lifetime decision for a target that may still be referenced by submitted GPU work.
+///
+/// Submission values must come from the same host fence timeline. This planner
+/// does not wait, allocate, release COM objects or establish cross-queue ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssOutputTargetLifetimePlan {
+    pub action: DlssOutputTargetUseAction,
+    pub wait_for_submission: Option<u64>,
+    pub retire_previous_after_submission: Option<u64>,
+    pub allocation: Option<DlssOutputAllocationPlan>,
+}
+
+pub fn plan_dlss_output_target_lifetime(
+    current: Option<DlssOutputTargetDesc>,
+    requested: DlssOutputTargetDesc,
+    current_last_submission: u64,
+    completed_submission: u64,
+    available_bytes: Option<u64>,
+) -> Result<DlssOutputTargetLifetimePlan, DlssOutputAllocationError> {
+    if current == Some(requested) {
+        if current_last_submission > completed_submission {
+            return Ok(DlssOutputTargetLifetimePlan {
+                action: DlssOutputTargetUseAction::WaitForSubmission,
+                wait_for_submission: Some(current_last_submission),
+                retire_previous_after_submission: None,
+                allocation: None,
+            });
+        }
+        return Ok(DlssOutputTargetLifetimePlan {
+            action: DlssOutputTargetUseAction::ReuseNow,
+            wait_for_submission: None,
+            retire_previous_after_submission: None,
+            allocation: Some(DlssOutputAllocationPlan::new(
+                current, requested, available_bytes,
+            )?),
+        });
+    }
+
+    let allocation = DlssOutputAllocationPlan::new(
+        current, requested, available_bytes,
+    )?;
+    Ok(DlssOutputTargetLifetimePlan {
+        action: DlssOutputTargetUseAction::AllocateReplacement,
+        wait_for_submission: None,
+        retire_previous_after_submission: current
+            .and_then(|_| (current_last_submission > completed_submission)
+                .then_some(current_last_submission)),
+        allocation: Some(allocation),
+    })
+}
+
+#[cfg(test)]
+mod dlss_output_target_lifetime_tests {
+    use super::{
+        plan_dlss_output_target_lifetime, DlssOutputTargetDesc as Desc,
+        DlssOutputTargetUseAction as Action, DlssOutputFormat as Format,
+    };
+
+    fn target(width: u32) -> Desc {
+        Desc::new(width, 1080, Format::R8G8B8A8Unorm).unwrap()
+    }
+
+    #[test]
+    fn matching_target_waits_for_its_last_gpu_submission() {
+        let desc = target(1920);
+        let plan = plan_dlss_output_target_lifetime(
+            Some(desc), desc, 42, 41, None,
+        ).unwrap();
+        assert_eq!(plan.action, Action::WaitForSubmission);
+        assert_eq!(plan.wait_for_submission, Some(42));
+        assert_eq!(plan.retire_previous_after_submission, None);
+        assert_eq!(plan.allocation, None);
+    }
+
+    #[test]
+    fn matching_target_is_reused_after_its_submission_completes() {
+        let desc = target(1920);
+        let plan = plan_dlss_output_target_lifetime(
+            Some(desc), desc, 42, 42, None,
+        ).unwrap();
+        assert_eq!(plan.action, Action::ReuseNow);
+        assert_eq!(plan.wait_for_submission, None);
+        assert_eq!(plan.allocation.unwrap().estimated_required_bytes, 0);
+    }
+
+    #[test]
+    fn replacement_keeps_old_target_until_its_last_submission_completes() {
+        let old = target(1920);
+        let new = target(2560);
+        let budget = new.estimated_bytes * 5 / 4;
+        let plan = plan_dlss_output_target_lifetime(
+            Some(old), new, 90, 89, Some(budget),
+        ).unwrap();
+        assert_eq!(plan.action, Action::AllocateReplacement);
+        assert_eq!(plan.retire_previous_after_submission, Some(90));
+        assert_eq!(plan.allocation.unwrap().action, super::DlssOutputAllocationAction::AllocateNew);
+    }
+
+    #[test]
+    fn completed_old_target_needs_no_deferred_retirement() {
+        let old = target(1920);
+        let new = target(1280);
+        let budget = new.estimated_bytes * 5 / 4;
+        let plan = plan_dlss_output_target_lifetime(
+            Some(old), new, 90, 90, Some(budget),
+        ).unwrap();
+        assert_eq!(plan.action, Action::AllocateReplacement);
+        assert_eq!(plan.retire_previous_after_submission, None);
+    }
+
+    #[test]
+    fn replacement_still_obeys_live_budget_policy() {
+        let old = target(1920);
+        let new = target(2560);
+        assert!(plan_dlss_output_target_lifetime(
+            Some(old), new, 90, 89, Some(1),
+        ).is_err());
+    }
+}
+
 /// Minimal resource metadata used to reject incompatible color/depth pairs
 /// before a future temporal upscaler can consume them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
