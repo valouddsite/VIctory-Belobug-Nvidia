@@ -109,6 +109,10 @@ impl Upload {
         let arena = &mut arenas[a];
         arena.taken[first..first + n].fill(true);
         let at = arena.at + first * BLOCK;
+        // The blocks are marked taken, so their ownership no longer depends
+        // on the arena lock. Zero them after releasing it: large uploads must
+        // not hold the global allocator lock while touching every byte.
+        drop(arenas);
         // SAFETY: the blocks are the arena's and nobody else's now.
         unsafe { std::ptr::write_bytes(at as *mut u8, 0, len) };
         Some(Upload(Kind::Low(at, len)))
