@@ -216,8 +216,11 @@ impl Worker {
 
     fn work(self) {
         let mut value = 0;
+        // Keep the batch allocation for this long-lived worker: every
+        // iteration reuses its capacity after the previous submission lands.
+        let mut jobs = Vec::with_capacity(BATCH.1);
         loop {
-            let mut jobs = Vec::new();
+            jobs.clear();
             {
                 let mut queue = QUEUE.0.lock().unwrap_or_else(|e| e.into_inner());
                 while queue.is_empty() {
@@ -235,7 +238,7 @@ impl Worker {
             if let Err(e) = self.copy(&jobs, value) {
                 tracing::warn!(error = %e, "uploads ahead did not run");
             }
-            finish(jobs);
+            finish(&jobs);
         }
     }
 
@@ -288,8 +291,8 @@ impl Job {
 }
 
 /// The jobs' copies have run.
-fn finish(jobs: Vec<Arc<Job>>) {
-    for job in &jobs {
+fn finish(jobs: &[Arc<Job>]) {
+    for job in jobs {
         job.staging.uploaded.store(true, Relaxed);
         job.staging.dirty.store(false, Relaxed);
         job.staging.note_held();
@@ -298,12 +301,12 @@ fn finish(jobs: Vec<Arc<Job>>) {
     }
     {
         let mut way = ON_THEIR_WAY.lock().unwrap_or_else(|e| e.into_inner());
-        for job in &jobs {
+        for job in jobs {
             way.remove(&job.copy.serial);
         }
         LANDED.notify_all();
     }
-    for job in &jobs {
+    for job in jobs {
         let us = job.asked.elapsed().as_micros() as u64;
         let n = STATS[0].fetch_add(1, Relaxed) + 1;
         let bytes = STATS[1].fetch_add(job.staging.read as u64, Relaxed) + job.staging.read as u64;
