@@ -9257,6 +9257,35 @@ impl Host {
             Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             ..Default::default()
         };
+        // Do not assume a DXGI format supports typed UAV stores merely
+        // because D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS is accepted.
+        // Query the active adapter/driver before creating a target that
+        // Streamline would later write through a typed UAV.
+        let mut format_support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+            Format: resource_desc.Format,
+            Support1: D3D12_FORMAT_SUPPORT1(0),
+            Support2: D3D12_FORMAT_SUPPORT2(0),
+        };
+        // SAFETY: CheckFeatureSupport fills the correctly sized format
+        // support structure for the requested DXGI format.
+        unsafe {
+            self.device.CheckFeatureSupport(
+                D3D12_FEATURE_FORMAT_SUPPORT,
+                (&raw mut format_support).cast(),
+                std::mem::size_of_val(&format_support) as u32,
+            )?;
+        }
+        if format_support.Support1.0
+            & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW.0
+            == 0
+        {
+            tracing::warn!(
+                format = resource_desc.Format.0,
+                "refusing DLSS output format: adapter does not support typed UAV views"
+            );
+            return Err(windows::core::Error::empty());
+        }
+
         let mut resource = None;
         // SAFETY: the validated descriptor describes a single-sample 2D
         // texture; the returned COM resource is retained by DlssOutputTarget.
