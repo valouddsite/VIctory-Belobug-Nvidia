@@ -26,6 +26,8 @@ struct Arena {
     taken: Vec<bool>,
     /// Preferred first-fit search position; freed blocks move it backwards.
     cursor: usize,
+    /// Number of blocks not currently handed out; skips arenas too small for a request.
+    free_blocks: usize,
 }
 
 static ARENAS: Mutex<Vec<Arena>> = Mutex::new(Vec::new());
@@ -105,6 +107,9 @@ impl Upload {
         let n = len.max(1).div_ceil(BLOCK);
         let mut arenas = ARENAS.lock().unwrap_or_else(|e| e.into_inner());
         let found = arenas.iter().enumerate().find_map(|(a, arena)| {
+            if arena.free_blocks < n {
+                return None;
+            }
             Some((a, gap_from(&arena.taken, n, arena.cursor).or_else(|| gap(&arena.taken, n))?))
         });
         let (a, first) = match found {
@@ -114,12 +119,13 @@ impl Upload {
                 let at = reserve(blocks * BLOCK)?;
                 crate::shadow::register(at, at as u64, (blocks * BLOCK) as u64);
                 tracing::info!(at = format_args!("{at:#x}"), bytes = blocks * BLOCK, "memory for lists' uploads, where shaders reach it by address");
-                arenas.push(Arena { at, taken: vec![false; blocks], cursor: 0 });
+                arenas.push(Arena { at, taken: vec![false; blocks], cursor: 0, free_blocks: blocks });
                 (arenas.len() - 1, 0)
             }
         };
         let arena = &mut arenas[a];
         arena.taken[first..first + n].fill(true);
+        arena.free_blocks -= n;
         arena.cursor = (first + n) % arena.taken.len();
         let at = arena.at + first * BLOCK;
         // The blocks are marked taken, so their ownership no longer depends
@@ -145,7 +151,9 @@ impl Drop for Upload {
         let mut arenas = ARENAS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(arena) = arenas.iter_mut().find(|a| (a.at..a.at + a.taken.len() * BLOCK).contains(&at)) {
             let first = (at - arena.at) / BLOCK;
-            arena.taken[first..first + len.max(1).div_ceil(BLOCK)].fill(false);
+            let n = len.max(1).div_ceil(BLOCK);
+            arena.taken[first..first + n].fill(false);
+            arena.free_blocks += n;
             arena.cursor = arena.cursor.min(first);
         }
     }
