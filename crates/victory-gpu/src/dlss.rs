@@ -239,9 +239,7 @@ pub(crate) fn consume_present_depth_candidate(
     frame: u64,
     color_resource: usize,
 ) -> Option<PresentedDepthCandidate> {
-    let Some(candidates) = PRESENT_DEPTH_CANDIDATES.get() else {
-        return None;
-    };
+    let candidates = PRESENT_DEPTH_CANDIDATES.get()?;
     let mut candidates = candidates.lock().unwrap_or_else(|e| e.into_inner());
     candidates.retain(|(candidate_frame, _), _| *candidate_frame >= frame);
     let Some(Some(candidate)) = candidates.remove(&(frame, color_resource)) else {
