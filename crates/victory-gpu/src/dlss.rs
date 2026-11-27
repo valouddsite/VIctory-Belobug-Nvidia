@@ -1196,3 +1196,79 @@ mod temporal_history_tests {
         );
     }
 }
+
+
+/// Sub-pixel projection offset for one temporal frame, in render-pixel units.
+///
+/// The sequence is deterministic and centered around zero. The renderer must
+/// still apply this offset to its projection matrix and pass the same values
+/// to the upscaler; generating the values alone does not jitter the scene.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalJitter {
+    pub x_pixels: f32,
+    pub y_pixels: f32,
+}
+
+fn halton(index: u64, base: u64) -> f64 {
+    let mut index = index;
+    let mut fraction = 1.0;
+    let mut value = 0.0;
+    while index > 0 {
+        fraction /= base as f64;
+        value += fraction * (index % base) as f64;
+        index /= base;
+    }
+    value
+}
+
+/// Generate deterministic Halton(2, 3) sub-pixel jitter for a frame.
+///
+/// Values are centered in the interval [-0.5, 0.5) pixels. This is only a
+/// sequence generator: callers remain responsible for applying the offset
+/// consistently to the camera projection and the Streamline frame constants.
+pub fn temporal_jitter(frame_index: u64) -> TemporalJitter {
+    let sample = frame_index.saturating_add(1);
+    TemporalJitter {
+        x_pixels: (halton(sample, 2) - 0.5) as f32,
+        y_pixels: (halton(sample, 3) - 0.5) as f32,
+    }
+}
+
+#[cfg(test)]
+mod temporal_jitter_tests {
+    use super::{temporal_jitter, TemporalJitter};
+
+    #[test]
+    fn first_sample_is_deterministic() {
+        assert_eq!(
+            temporal_jitter(0),
+            TemporalJitter {
+                x_pixels: 0.0,
+                y_pixels: -1.0 / 6.0,
+            }
+        );
+    }
+
+    #[test]
+    fn sequence_is_deterministic_and_changes_between_frames() {
+        let first = temporal_jitter(4);
+        assert_eq!(first, temporal_jitter(4));
+        assert_ne!(first, temporal_jitter(5));
+    }
+
+    #[test]
+    fn offsets_stay_within_half_a_render_pixel() {
+        for frame in 0..4096 {
+            let jitter = temporal_jitter(frame);
+            assert!(jitter.x_pixels >= -0.5 && jitter.x_pixels < 0.5);
+            assert!(jitter.y_pixels >= -0.5 && jitter.y_pixels < 0.5);
+        }
+    }
+
+    #[test]
+    fn maximum_frame_index_stays_finite() {
+        let jitter = temporal_jitter(u64::MAX);
+        assert!(jitter.x_pixels.is_finite());
+        assert!(jitter.y_pixels.is_finite());
+    }
+}
