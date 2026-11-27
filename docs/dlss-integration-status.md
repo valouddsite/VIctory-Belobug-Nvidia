@@ -15,7 +15,9 @@ That is a presentation path, not a DLSS integration. At this boundary the render
 - a resolution-plan type with zero-size validation;
 - an explicit `NotIntegrated` backend state;
 - a one-time warning when `VICTORY_DLSS` is requested, while leaving the existing presentation path unchanged;
-- a pure color/depth compatibility validator for 2D extent, sample count and typed DSV format, plus one-time diagnostic reporting when the guest binds a new target set.
+- a pure color/depth compatibility validator for 2D extent, sample count and typed DSV format;
+- frame-scoped retention of compatible color/depth candidates, keyed by the exact guest color-resource identity and the upcoming present frame;
+- consumption only when that exact color resource is presented in the same frame; ambiguous color targets paired with different depth resources are rejected, and retained host resources live through the presentation call.
 
 Environment variables:
 
@@ -31,7 +33,7 @@ These variables do not activate upscaling. The resolution scales in the prefligh
 
 ## Remaining implementation gates
 
-1. **Presentation/depth association:** the draw layer now validates the first bound color target against its DSV for matching 2D dimensions, sample count and a supported typed depth-view format. This is a binding-time diagnostic only: it does not prove that the pair belongs to the final presented plane, and it does not yet bridge that pair to `Host::present_planes`. Next, correlate the final color texture with the exact depth resource and submission/frame lifetime; validate resource state before exposing it to an upscaling pass.
+1. **Presentation/depth association:** the draw layer now validates the first bound color target against its DSV for matching 2D dimensions, sample count and a supported typed depth-view format. This is a binding-time diagnostic only: it does not prove that the pair belongs to the final presented plane, and it does not yet bridge that pair to `Host::present_planes`. The draw layer now retains compatible candidates by exact guest color-resource identity and upcoming present frame. At presentation, the candidate is consumed only if that exact color resource is the one being shown in the same frame; ambiguous pairs are discarded, and the host color/depth resources are retained through the presentation call. This establishes identity and lifetime correlation, but it does not yet transition or bind depth for a DLSS evaluation. Next, validate the actual submitted resource states and expose the pair to the upscaler at the correct point in the render graph.
 2. **Temporal data:** identify whether the guest provides a usable motion-vector render target or whether the renderer can generate correct per-pixel vectors for all geometry; add sub-pixel projection jitter and preserve previous-frame transforms. Do not substitute guessed vectors or frame differencing.
 3. **Render graph / ordering:** expose scene color before tone mapping and UI composition; run the upscaler at the correct point, then composite UI at output resolution.
 4. **Resolution management:** separate guest internal render dimensions from output/swap-chain dimensions; handle resize, aspect ratio, dynamic resolution and history invalidation.
