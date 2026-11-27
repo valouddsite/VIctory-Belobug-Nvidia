@@ -235,7 +235,7 @@ mod tests {
     fn accepts_source() {
         assert!(check("crates/x/src/lib.rs", b"fn main() {}\n").is_empty());
         assert!(check(".gitignore", b"/target/\n").is_empty());
-        assert!(check("assets/branding/victory-logo.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>\n").is_empty());
+        assert!(check("assets/branding/xboxx-logo.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>\n").is_empty());
         assert!(check(".githooks/pre-commit", b"#!/bin/sh\n").is_empty());
     }
 
