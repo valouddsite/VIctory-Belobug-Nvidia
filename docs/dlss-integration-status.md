@@ -16,6 +16,7 @@ That is a presentation path, not a DLSS integration. At this boundary the render
 - a CPU-only temporal history lifecycle tracker that invalidates continuity on first frame, render-extent changes, camera cuts, explicit resets and non-consecutive frame indices; it does not allocate, clear or validate GPU history textures;
 - a deterministic Halton(2,3) sub-pixel jitter sequence generator returning centered render-pixel offsets; projection-matrix application and matching Streamline constants remain unwired;
 - a `TemporalFramePlan` that advances history tracking and returns the same frame's render extent, Halton jitter, history-validity flag and reset reason as one CPU-side value; it does not apply projection jitter or create GPU history;
+- a unified `plan_dlss_evaluation` gate that validates required input availability, render/output extents, exact frame-jitter and history consistency, non-aliased color/depth/motion-vector resource identities, and completed-submission shader-read transition proposals; it is still CPU-only and issues no barriers or Streamline calls;
 - a resolution-plan type with zero-size validation;
 - an explicit `NotIntegrated` backend state;
 - a one-time warning when `VICTORY_DLSS` is requested, while leaving the existing presentation path unchanged;
@@ -39,6 +40,8 @@ Environment variables:
 | `VICTORY_DLSS_QUALITY=ultra-performance` | Store the future target preset name |
 
 These variables do not activate upscaling. The resolution scales in the preflight module are planning values only and are not applied to guest rendering resources.
+
+The unified evaluation preflight is intentionally stricter than the standalone metadata checks: it rejects a frame until all required inputs are declared, render extents and jitter match the same temporal frame, previous-frame history is valid, all three GPU resource identities are distinct, and the associated submission has completed. It returns transition proposals for color, depth and motion vectors, but those proposals are not recorded D3D12 barriers and do not prove cross-queue ownership. No evaluation can run from this contract alone.
 
 ## Remaining implementation gates
 
