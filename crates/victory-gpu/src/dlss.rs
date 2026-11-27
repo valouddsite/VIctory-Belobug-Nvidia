@@ -648,6 +648,7 @@ pub enum DlssEvaluationPlanError {
     RenderExtentMismatch,
     InvalidColorDepthPair(DepthPairStatus),
     MotionVectorTextureMismatch,
+    MultisampledInput,
     OutputIsNotLargerThanRender,
     JitterDoesNotMatchFrame,
     TemporalHistoryUnavailable,
@@ -702,6 +703,15 @@ pub fn plan_dlss_evaluation(
     );
     if color_depth_status != DepthPairStatus::Compatible {
         return Err(DlssEvaluationPlanError::InvalidColorDepthPair(color_depth_status));
+    }
+    // Streamline DLSS SR consumes resolved 2D inputs. Never pass an MSAA
+    // render target directly; the renderer must resolve it into single-sample
+    // scene-color/depth/motion-vector textures first.
+    if inputs.color_texture.samples != 1
+        || inputs.depth_texture.samples != 1
+        || inputs.motion_vectors_texture.samples != 1
+    {
+        return Err(DlssEvaluationPlanError::MultisampledInput);
     }
     let motion_vectors = inputs.motion_vectors_texture;
     if motion_vectors.width != frame.render_width
@@ -879,6 +889,18 @@ mod dlss_evaluation_plan_tests {
         let mut inputs = valid_inputs();
         inputs.motion_vectors_texture.dimension = 4;
         assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorTextureMismatch));
+    }
+
+    #[test]
+    fn multisampled_inputs_are_rejected_until_resolved() {
+        let mut inputs = valid_inputs();
+        inputs.color_texture.samples = 4;
+        inputs.depth_texture.samples = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.samples = 2;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
     }
 
     #[test]
