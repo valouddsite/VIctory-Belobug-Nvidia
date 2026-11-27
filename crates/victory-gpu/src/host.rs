@@ -9234,6 +9234,74 @@ impl Host {
         self.get_or_create_dlss_output_target(None, desc)
     }
 
+    /// Bind the target's shader-visible UAV heap to an open direct command list.
+    ///
+    /// D3D12 replaces all currently bound descriptor heaps when this is called.
+    /// Pass the sampler heap too when the list needs one; the returned GPU handle
+    /// is the UAV table start to pass to the appropriate root descriptor table.
+    /// The caller must keep `target` alive through submission completion and
+    /// must set the matching root signature/table before dispatching work.
+    #[allow(dead_code)]
+    pub(crate) fn bind_dlss_output_uav(
+        &self,
+        list: &ID3D12GraphicsCommandList,
+        target: &DlssOutputTarget,
+        sampler_heap: Option<&ID3D12DescriptorHeap>,
+    ) -> D3D12_GPU_DESCRIPTOR_HANDLE {
+        let mut heaps = vec![Some(target.uav_heap.clone())];
+        if let Some(sampler_heap) = sampler_heap {
+            heaps.push(Some(sampler_heap.clone()));
+        }
+        // SAFETY: the heaps are live and shader-visible; D3D12 copies their
+        // COM references into the command-list state at record time.
+        unsafe { list.SetDescriptorHeaps(&heaps) };
+        target.uav_gpu
+    }
+
+    /// Record an explicit state transition for a DLSS output target.
+    ///
+    /// `before` must be the resource's actual state at this point in this
+    /// command-list timeline. This records a barrier only; it does not track
+    /// state, synchronize queues, or submit/wait for the list.
+    #[allow(dead_code)]
+    pub(crate) fn transition_dlss_output_target(
+        &self,
+        list: &ID3D12GraphicsCommandList,
+        target: &DlssOutputTarget,
+        before: D3D12_RESOURCE_STATES,
+        after: D3D12_RESOURCE_STATES,
+    ) {
+        if before == after {
+            return;
+        }
+        // SAFETY: caller supplies the true before-state and an open list;
+        // the target resource is retained by the borrowed target.
+        unsafe { list.ResourceBarrier(&[transition(&target.resource, before, after)]) };
+    }
+
+    /// Record a UAV ordering barrier for writes to this output target.
+    ///
+    /// Use between dependent UAV accesses when the D3D12 execution timeline
+    /// requires UAV ordering. This does not transition the resource state.
+    #[allow(dead_code)]
+    pub(crate) fn uav_barrier_dlss_output_target(
+        &self,
+        list: &ID3D12GraphicsCommandList,
+        target: &DlssOutputTarget,
+    ) {
+        let barrier = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                    pResource: std::mem::ManuallyDrop::new(Some(target.resource.clone())),
+                }),
+            },
+        };
+        // SAFETY: the resource is alive and the caller records on an open list.
+        unsafe { list.ResourceBarrier(&[barrier]) };
+    }
+
     /// Allocate a dedicated default-heap 2D output texture with UAV capability.
     ///
     /// This deliberately does not hook into presentation yet: the current
