@@ -623,6 +623,12 @@ pub struct DlssEvaluationInputs {
     pub resolution: ResolutionPlan,
     pub available_inputs: FrameInputs,
     pub temporal_metadata: TemporalFrameMetadata,
+    /// Actual host texture metadata captured for this exact completed frame.
+    pub color_texture: TextureInfo,
+    pub depth_texture: TextureInfo,
+    pub motion_vectors_texture: TextureInfo,
+    pub depth_view_format: u32,
+    pub depth_view_dimension: u32,
     pub color_resource_id: usize,
     pub depth_resource_id: usize,
     pub motion_vectors_resource_id: usize,
@@ -640,6 +646,8 @@ pub struct DlssEvaluationInputs {
 pub enum DlssEvaluationPlanError {
     MissingRequiredInputs,
     RenderExtentMismatch,
+    InvalidColorDepthPair(DepthPairStatus),
+    MotionVectorTextureMismatch,
     OutputIsNotLargerThanRender,
     JitterDoesNotMatchFrame,
     TemporalHistoryUnavailable,
@@ -685,6 +693,23 @@ pub fn plan_dlss_evaluation(
         || metadata.render_height != frame.render_height
     {
         return Err(DlssEvaluationPlanError::RenderExtentMismatch);
+    }
+    let color_depth_status = validate_depth_pair(
+        inputs.color_texture,
+        inputs.depth_texture,
+        inputs.depth_view_format,
+        inputs.depth_view_dimension,
+    );
+    if color_depth_status != DepthPairStatus::Compatible {
+        return Err(DlssEvaluationPlanError::InvalidColorDepthPair(color_depth_status));
+    }
+    let motion_vectors = inputs.motion_vectors_texture;
+    if motion_vectors.width != frame.render_width
+        || motion_vectors.height != frame.render_height
+        || motion_vectors.dimension != 3
+        || motion_vectors.samples == 0
+    {
+        return Err(DlssEvaluationPlanError::MotionVectorTextureMismatch);
     }
     if resolution.output_width <= resolution.render_width
         || resolution.output_height <= resolution.render_height
@@ -761,7 +786,7 @@ mod dlss_evaluation_plan_tests {
     use super::{
         plan_dlss_evaluation, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
         FrameInputs, MotionVectorDirection, MotionVectorUnits, ResolutionPlan,
-        TemporalFrameMetadata, TemporalHistoryResetReason as Reset, TemporalMetadataError,
+        TextureInfo, TemporalFrameMetadata, TemporalHistoryResetReason as Reset, TemporalMetadataError,
         TemporalHistoryTracker as Tracker, ShaderReadTransitionError,
     };
 
@@ -797,6 +822,11 @@ mod dlss_evaluation_plan_tests {
                 motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
                 previous_frame_valid: true,
             },
+            color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
+            depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
+            motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3 },
+            depth_view_format: 40,
+            depth_view_dimension: 3,
             color_resource_id: 0x100,
             depth_resource_id: 0x200,
             motion_vectors_resource_id: 0x300,
@@ -821,6 +851,34 @@ mod dlss_evaluation_plan_tests {
         assert_eq!(plan.motion_vectors_transition.after_state, 0xC0);
         assert!(plan.color_transition.barrier_required);
         assert!(!plan.reset_history);
+    }
+
+    #[test]
+    fn mismatched_color_depth_extent_and_depth_format_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.depth_texture.width = 640;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(super::DepthPairStatus::ExtentMismatch))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.depth_view_format = 0;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(super::DepthPairStatus::UnsupportedDepthFormat))
+        );
+    }
+
+    #[test]
+    fn motion_vector_texture_must_match_render_extent_and_be_2d() {
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.height = 360;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.dimension = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorTextureMismatch));
     }
 
     #[test]

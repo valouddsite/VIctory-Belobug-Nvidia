@@ -41,6 +41,8 @@ Environment variables:
 
 These variables do not activate upscaling. The resolution scales in the preflight module are planning values only and are not applied to guest rendering resources.
 
+The unified evaluation preflight additionally requires texture metadata for the exact frame: color/depth must pass the 2D extent, sample-count and typed depth-format check, while the motion-vector texture must be a non-empty 2D texture matching the render extent. This validates declared metadata only; it does not prove that the textures contain valid scene data or that their GPU states are synchronized.
+
 The unified evaluation preflight is intentionally stricter than the standalone metadata checks: it rejects a frame until all required inputs are declared, render extents and jitter match the same temporal frame, previous-frame history is valid, all three GPU resource identities are distinct, and the associated submission has completed. It returns transition proposals for color, depth and motion vectors, but those proposals are not recorded D3D12 barriers and do not prove cross-queue ownership. No evaluation can run from this contract alone.
 
 ## Remaining implementation gates
