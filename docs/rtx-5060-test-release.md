@@ -12,7 +12,7 @@ After this workflow has been merged into the repository's default branch:
 4. Wait for the run to finish. Download the `VIctory-RTX5060-Windows-x64` artifact from the completed run.
 5. Extract the ZIP on the Windows PC.
 
-The workflow runs the default workspace tests, builds `victory.exe` in optimized release mode for Windows x64, and packages the executable, example configuration, launcher and this test guide. The artifact is retained for 14 days.
+The workflow runs the default workspace tests, builds `victory.exe` in optimized release mode for Windows x64, and packages the executable, example configuration, launcher and this test guide. The artifact is retained for 14 days. In the ZIP, `victory.exe` is at the extracted folder root; the launcher automatically uses that packaged binary for `-Build release` (source checkouts continue to use `target\\release\\victory.exe`).
 
 ## Local setup
 
