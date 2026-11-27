@@ -761,9 +761,8 @@ mod dlss_evaluation_plan_tests {
     use super::{
         plan_dlss_evaluation, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
         FrameInputs, MotionVectorDirection, MotionVectorUnits, ResolutionPlan,
-        TemporalFrameMetadata, TemporalHistoryTracker, TemporalHistoryResetReason as Reset,
-        TemporalMetadataError, TemporalHistoryTracker as Tracker, TemporalJitter,
-        ShaderReadTransitionError,
+        TemporalFrameMetadata, TemporalHistoryResetReason as Reset, TemporalMetadataError,
+        TemporalHistoryTracker as Tracker, ShaderReadTransitionError,
     };
 
     fn valid_inputs() -> DlssEvaluationInputs {
@@ -891,7 +890,7 @@ mod dlss_evaluation_plan_tests {
         inputs.temporal_metadata.motion_vector_width = 640;
         assert_eq!(
             plan_dlss_evaluation(inputs),
-            Err(Error::RenderExtentMismatch)
+            Err(Error::InvalidTemporalMetadata(TemporalMetadataError::MotionVectorExtentMismatch))
         );
         let mut inputs = valid_inputs();
         inputs.temporal_metadata.motion_vector_scale_x = f32::NAN;
