@@ -186,6 +186,76 @@ impl ResolutionPlan {
 }
 
 
+/// Pixel format for a dedicated DLSS output texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputFormat {
+    R8G8B8A8Unorm,
+    R10G10B10A2Unorm,
+    R16G16B16A16Float,
+}
+
+impl DlssOutputFormat {
+    /// DXGI_FORMAT numeric value, kept independent of the Windows bindings so
+    /// output sizing can be validated on every CI platform.
+    pub const fn dxgi_format(self) -> u32 {
+        match self {
+            Self::R8G8B8A8Unorm => 28,
+            Self::R10G10B10A2Unorm => 24,
+            Self::R16G16B16A16Float => 10,
+        }
+    }
+
+    pub const fn bytes_per_pixel(self) -> u64 {
+        match self {
+            Self::R8G8B8A8Unorm | Self::R10G10B10A2Unorm => 4,
+            Self::R16G16B16A16Float => 8,
+        }
+    }
+}
+
+/// Validated dimensions and format for a dedicated 2D DLSS output texture.
+/// This is an allocation request, not evidence that a GPU resource exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssOutputTargetDesc {
+    pub width: u32,
+    pub height: u32,
+    pub format: DlssOutputFormat,
+    pub estimated_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputTargetDescError {
+    ZeroExtent,
+    ExtentTooLarge,
+    AllocationSizeOverflow,
+}
+
+impl DlssOutputTargetDesc {
+    pub fn new(
+        width: u32,
+        height: u32,
+        format: DlssOutputFormat,
+    ) -> Result<Self, DlssOutputTargetDescError> {
+        const MAX_TEXTURE_DIMENSION: u32 = 16_384;
+        if width == 0 || height == 0 {
+            return Err(DlssOutputTargetDescError::ZeroExtent);
+        }
+        if width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION {
+            return Err(DlssOutputTargetDescError::ExtentTooLarge);
+        }
+        let estimated_bytes = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()))
+            .ok_or(DlssOutputTargetDescError::AllocationSizeOverflow)?;
+        Ok(Self {
+            width,
+            height,
+            format,
+            estimated_bytes,
+        })
+    }
+}
+
 /// Minimal resource metadata used to reject incompatible color/depth pairs
 /// before a future temporal upscaler can consume them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1958,3 +2028,34 @@ mod temporal_jitter_tests {
         assert!(jitter.y_pixels.is_finite());
     }
 }
+
+#[cfg(test)]
+mod dlss_output_target_desc_tests {
+    use super::{DlssOutputFormat as Format, DlssOutputTargetDesc as Desc, DlssOutputTargetDescError as Error};
+
+    #[test]
+    fn accepts_supported_output_formats_and_estimates_memory() {
+        let sdr = Desc::new(1920, 1080, Format::R8G8B8A8Unorm).unwrap();
+        assert_eq!(sdr.estimated_bytes, 1920 * 1080 * 4);
+        let hdr = Desc::new(3840, 2160, Format::R16G16B16A16Float).unwrap();
+        assert_eq!(hdr.estimated_bytes, 3840 * 2160 * 8);
+        assert_eq!(Format::R10G10B10A2Unorm.dxgi_format(), 24);
+    }
+
+    #[test]
+    fn rejects_zero_or_out_of_range_dimensions() {
+        assert_eq!(Desc::new(0, 1080, Format::R8G8B8A8Unorm), Err(Error::ZeroExtent));
+        assert_eq!(Desc::new(1920, 0, Format::R8G8B8A8Unorm), Err(Error::ZeroExtent));
+        assert_eq!(Desc::new(16_385, 1080, Format::R8G8B8A8Unorm), Err(Error::ExtentTooLarge));
+        assert_eq!(Desc::new(1920, 16_385, Format::R8G8B8A8Unorm), Err(Error::ExtentTooLarge));
+    }
+
+    #[test]
+    fn output_size_estimate_is_exact_for_8k_formats() {
+        let rgba8 = Desc::new(7680, 4320, Format::R8G8B8A8Unorm).unwrap();
+        let rgba16f = Desc::new(7680, 4320, Format::R16G16B16A16Float).unwrap();
+        assert_eq!(rgba8.estimated_bytes, 132_710_400);
+        assert_eq!(rgba16f.estimated_bytes, 265_420_800);
+    }
+}
+
