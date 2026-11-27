@@ -13,10 +13,17 @@ pub struct CacheKey(blake3::Hash);
 
 impl CacheKey {
     pub fn new(converter: &dyn Converter, input: &[u8]) -> Self {
+        Self::new_with_prefix(converter, &[], input)
+    }
+
+    /// Builds the same content key while hashing a separate prefix without
+    /// first copying it into the converter's input buffer.
+    pub fn new_with_prefix(converter: &dyn Converter, prefix: &[u8], input: &[u8]) -> Self {
         let mut h = blake3::Hasher::new();
         h.update(converter.id().as_bytes());
         h.update(&[0]);
         h.update(&converter.version().to_le_bytes());
+        h.update(prefix);
         h.update(input);
         CacheKey(h.finalize())
     }
@@ -48,7 +55,18 @@ impl Cache {
 
     /// Returns the cached output for `input`, converting it first if needed.
     pub fn get_or_convert(&self, converter: &dyn Converter, input: &[u8]) -> Result<PathBuf> {
-        let key = CacheKey::new(converter, input);
+        self.get_or_convert_with_prefix(converter, &[], input)
+    }
+
+    /// Like `get_or_convert`, with extra bytes in the cache key that are not
+    /// passed to the converter.
+    pub fn get_or_convert_with_prefix(
+        &self,
+        converter: &dyn Converter,
+        prefix: &[u8],
+        input: &[u8],
+    ) -> Result<PathBuf> {
+        let key = CacheKey::new_with_prefix(converter, prefix, input);
         let path = self.path_for(&key);
         if path.is_file() {
             tracing::trace!(converter = converter.id(), key = %key.to_hex(), "cache hit");
@@ -248,6 +266,20 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn prefixed_keys_match_concatenated_keys_without_changing_converter_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::open(tmp.path().join("cache")).unwrap();
+        let conv = Upper { version: 1, runs: AtomicUsize::new(0) };
+        let prefixed = CacheKey::new_with_prefix(&conv, b"pre", b"fix");
+        let joined = CacheKey::new(&conv, b"prefix");
+        assert_eq!(prefixed, joined);
+
+        let path = cache.get_or_convert_with_prefix(&conv, b"pre", b"fix").unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"FIX");
+        assert_eq!(conv.runs.load(Ordering::Relaxed), 1);
     }
 
     #[test]

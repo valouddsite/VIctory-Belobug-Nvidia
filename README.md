@@ -73,6 +73,7 @@ Recent work targets CPU overhead around the host pipeline library and diagnostic
 | Early-pipeline tracking | 64 digest-selected shards with an atomic global limit of 100,000 keys |
 | Early-pipeline key storage | 128-bit BLAKE3 prefixes stored as `u128`, rather than individually allocated strings |
 | Conversion cache publication | Concurrent writers cannot turn a valid cache hit into a Windows rename failure; the first complete entry is retained |
+| Shader cache keys | The translator build fingerprint is hashed as a separate prefix, avoiding a full copy of each shader container before cache lookup |
 | Persistence | Existing 32-character hexadecimal `early-pipelines.txt` format retained |
 
 These changes reduce specific sources of lock contention and allocation overhead. They do **not** prove higher FPS or lower frame times; those effects require controlled measurements on the target GPU.
