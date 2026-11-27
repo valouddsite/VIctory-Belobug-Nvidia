@@ -43,6 +43,10 @@ jobs:
           $package = 'dist/VIctory-RTX5060-Windows-x64'
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item 'target/release/victory.exe' $package
+          # play.ps1 resolves the executable relative to its own parent folder.
+          # Mirror the normal Cargo output layout so -Build release works after extraction.
+          New-Item -ItemType Directory -Force -Path "$package/target/release" | Out-Null
+          Copy-Item 'target/release/victory.exe' "$package/target/release/"
           Copy-Item 'victory.example.toml' $package
           New-Item -ItemType Directory -Force -Path "$package/scripts" | Out-Null
           Copy-Item 'scripts/play.ps1' "$package/scripts/"
@@ -51,7 +55,7 @@ jobs:
 
           This is an experimental Windows x64 build. It is not a validated RTX 5060 release.
           Requirements: Windows 10/11 x64, AVX2 CPU, Direct3D 12 GPU with Shader Model 6.6
-          and mesh-shader support, current NVIDIA driver, and the MSVC runtime/build dependencies
+          and mesh-shader support, current NVIDIA driver, and the MSVC build dependencies
           required by the project.
 
           QUICK START
@@ -73,8 +77,19 @@ jobs:
           This build has passed automated Windows CI only. Actual RTX 5060 rendering, stability,
           VRAM use and frame rate must be tested on physical hardware.
           '@ | Set-Content -Encoding utf8 "$package/TEST-ON-YOUR-PC.txt"
+
+          $required = @(
+            "$package/victory.exe",
+            "$package/target/release/victory.exe",
+            "$package/victory.example.toml",
+            "$package/scripts/play.ps1",
+            "$package/TEST-ON-YOUR-PC.txt"
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path $file -PathType Leaf)) { throw "Required package file missing: $file" }
+          }
           Compress-Archive -Path "$package/*" -DestinationPath 'dist/VIctory-RTX5060-Windows-x64.zip' -Force
-          if (-not (Test-Path 'dist/VIctory-RTX5060-Windows-x64.zip')) { throw 'Package ZIP was not created.' }
+          if (-not (Test-Path 'dist/VIctory-RTX5060-Windows-x64.zip' -PathType Leaf)) { throw 'Package ZIP was not created.' }
 
       - name: Upload Windows test package
         uses: actions/upload-artifact@v4
