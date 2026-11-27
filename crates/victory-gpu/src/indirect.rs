@@ -289,6 +289,15 @@ fn is_amd_vendor(vendor_id: u32) -> bool {
     vendor_id == 0x1002
 }
 
+/// Whether the host can use the RDNA-specific shader translation path.
+///
+/// RDNA exposes both 32- and 64-lane waves. The vendor check alone is not
+/// enough: older AMD architectures that expose only 64-lane waves must keep
+/// the generic translation path too.
+pub(crate) fn rdna_translation(amd: bool, wave_min: u32, wave_max: u32) -> bool {
+    amd && wave_min == 32 && wave_max == 64
+}
+
 /// Whether `device` is an AMD card's.
 pub(crate) fn amd(device: &ID3D12Device) -> bool {
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4};
@@ -652,6 +661,15 @@ pub(crate) mod tests {
         assert!(is_amd_vendor(0x1002));
         assert!(!is_amd_vendor(0x10de)); // NVIDIA
         assert!(!is_amd_vendor(0x8086)); // Intel
+    }
+
+    #[test]
+    fn rdna_translation_requires_amd_and_a_32_to_64_wave_range() {
+        assert!(rdna_translation(true, 32, 64));
+        assert!(!rdna_translation(false, 32, 64)); // NVIDIA / Intel
+        assert!(!rdna_translation(true, 64, 64)); // older AMD wave64-only
+        assert!(!rdna_translation(true, 32, 32)); // wave32-only
+        assert!(!rdna_translation(true, 16, 64)); // unexpected capability range
     }
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0;
