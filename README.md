@@ -158,7 +158,9 @@ then download the `VIctory-RTX5060-Windows-x64` artifact. The ZIP contains
 local-test guide. Artifacts are retained for 14 days.
 
 Start with a copy of `victory.example.toml`, set your own game-data path, then
-run `scripts\play.ps1 -Exe <your-game-executable> -Build release`. If needed,
+run `scripts\play.ps1 -Exe <your-game-executable> -Build release`. The launcher
+uses `target\release\victory.exe` in a source checkout and the packaged
+`victory.exe` at the extracted folder root in the downloadable ZIP. If needed,
 retry with `-Safe`. Full setup and reporting instructions are in
 [docs/rtx-5060-test-release.md](docs/rtx-5060-test-release.md).
 
