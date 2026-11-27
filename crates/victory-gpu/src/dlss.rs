@@ -1035,3 +1035,167 @@ mod temporal_metadata_tests {
         assert_eq!(validate_temporal_frame_metadata(metadata), Ok(()));
     }
 }
+
+
+/// Why temporal reconstruction history is unavailable for the current frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalHistoryResetReason {
+    InitialFrame,
+    RenderExtentChanged,
+    CameraCut,
+    ExplicitReset,
+    FrameDiscontinuity,
+}
+
+/// Result of advancing the CPU-side temporal history lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemporalHistoryStatus {
+    /// True only when the immediately preceding frame is a valid history source.
+    pub previous_frame_valid: bool,
+    /// Set when the current frame must start a new temporal history sequence.
+    pub reset_reason: Option<TemporalHistoryResetReason>,
+}
+
+/// Invalid input to the temporal history lifecycle tracker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalHistoryError {
+    ZeroRenderExtent,
+}
+
+/// Tracks frame continuity and reset conditions for a future temporal upscaler.
+///
+/// This is metadata bookkeeping only. It does not allocate, retain, clear or
+/// validate GPU history textures, and it must not be used as proof that history
+/// pixels or motion vectors are available.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TemporalHistoryTracker {
+    previous_frame: Option<(u64, u32, u32)>,
+}
+
+impl TemporalHistoryTracker {
+    /// Advance the history lifecycle for one rendered frame.
+    ///
+    /// Camera cuts and explicit resets invalidate the prior frame. Resize,
+    /// first-frame and non-consecutive frame indices are detected automatically.
+    pub fn begin_frame(
+        &mut self,
+        frame_index: u64,
+        render_width: u32,
+        render_height: u32,
+        camera_cut: bool,
+        explicit_reset: bool,
+    ) -> Result<TemporalHistoryStatus, TemporalHistoryError> {
+        if render_width == 0 || render_height == 0 {
+            return Err(TemporalHistoryError::ZeroRenderExtent);
+        }
+
+        let reset_reason = match self.previous_frame {
+            None => Some(TemporalHistoryResetReason::InitialFrame),
+            Some((_, width, height)) if width != render_width || height != render_height => {
+                Some(TemporalHistoryResetReason::RenderExtentChanged)
+            }
+            Some((previous_index, _, _)) if camera_cut => {
+                let _ = previous_index;
+                Some(TemporalHistoryResetReason::CameraCut)
+            }
+            Some((_, _, _)) if explicit_reset => {
+                Some(TemporalHistoryResetReason::ExplicitReset)
+            }
+            Some((previous_index, _, _))
+                if previous_index.checked_add(1) != Some(frame_index) =>
+            {
+                Some(TemporalHistoryResetReason::FrameDiscontinuity)
+            }
+            Some((_, _, _)) => None,
+        };
+
+        self.previous_frame = Some((frame_index, render_width, render_height));
+        Ok(TemporalHistoryStatus {
+            previous_frame_valid: reset_reason.is_none(),
+            reset_reason,
+        })
+    }
+
+    /// Forget the tracked frame so the next call starts a fresh history sequence.
+    pub fn invalidate(&mut self) {
+        self.previous_frame = None;
+    }
+}
+
+#[cfg(test)]
+mod temporal_history_tests {
+    use super::{
+        TemporalHistoryError, TemporalHistoryResetReason as Reset,
+        TemporalHistoryTracker,
+    };
+
+    #[test]
+    fn first_frame_starts_without_previous_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        let status = tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        assert!(!status.previous_frame_valid);
+        assert_eq!(status.reset_reason, Some(Reset::InitialFrame));
+    }
+
+    #[test]
+    fn consecutive_frames_preserve_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(10, 1920, 1080, false, false).unwrap();
+        let status = tracker.begin_frame(11, 1920, 1080, false, false).unwrap();
+        assert!(status.previous_frame_valid);
+        assert_eq!(status.reset_reason, None);
+    }
+
+    #[test]
+    fn resize_invalidates_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        let status = tracker.begin_frame(2, 1280, 720, false, false).unwrap();
+        assert_eq!(status.reset_reason, Some(Reset::RenderExtentChanged));
+        assert!(!status.previous_frame_valid);
+    }
+
+    #[test]
+    fn camera_cut_and_explicit_reset_invalidate_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        assert_eq!(
+            tracker.begin_frame(2, 1920, 1080, true, false).unwrap().reset_reason,
+            Some(Reset::CameraCut)
+        );
+        assert_eq!(
+            tracker.begin_frame(3, 1920, 1080, false, true).unwrap().reset_reason,
+            Some(Reset::ExplicitReset)
+        );
+        assert!(tracker.begin_frame(4, 1920, 1080, false, false).unwrap().previous_frame_valid);
+    }
+
+    #[test]
+    fn skipped_or_repeated_frame_indices_invalidate_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        assert_eq!(
+            tracker.begin_frame(3, 1920, 1080, false, false).unwrap().reset_reason,
+            Some(Reset::FrameDiscontinuity)
+        );
+        assert_eq!(
+            tracker.begin_frame(3, 1920, 1080, false, false).unwrap().reset_reason,
+            Some(Reset::FrameDiscontinuity)
+        );
+    }
+
+    #[test]
+    fn explicit_invalidation_and_zero_extent_are_handled() {
+        let mut tracker = TemporalHistoryTracker::default();
+        assert_eq!(
+            tracker.begin_frame(1, 0, 1080, false, false),
+            Err(TemporalHistoryError::ZeroRenderExtent)
+        );
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        tracker.invalidate();
+        assert_eq!(
+            tracker.begin_frame(2, 1920, 1080, false, false).unwrap().reset_reason,
+            Some(Reset::InitialFrame)
+        );
+    }
+}
