@@ -1,234 +1,177 @@
-# VIctory — NVIDIA RTX 5060 compatibility work
+<div align="center">
 
-A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
-that runs an Xbox Series title natively on Windows from files the user supplies.
+<img src="assets/branding/victory-logo.svg" alt="VIctory — NVIDIA RTX 5060" width="680" />
 
-## NVIDIA RTX 5060 work
+### NVIDIA RTX 5060 · WINDOWS x64 · DIRECT3D 12
 
-This fork is being evaluated and adapted for NVIDIA GeForce RTX 5060 (8 GB VRAM). The current renderer already uses host Direct3D 12 and has generic DXGI adapter selection; this does **not** yet mean RTX 5060 compatibility or playable performance has been demonstrated.
+**A community compatibility fork focused on NVIDIA support, GPU diagnostics and lower CPU overhead.**
 
-The existing RX 7900 XTX measurements below are reference results from the AMD development machine, not RTX 5060 results. The only reported NVIDIA run in the inherited baseline is an RTX 3090 run at roughly 0.53–0.55 seconds per frame, so it is evidence of partial NVIDIA execution, not evidence that the RTX 5060 works well.
+<img alt="Platform" src="https://img.shields.io/badge/PLATFORM-WINDOWS%2010%2F11-00C8FF?style=for-the-badge&logo=windows&logoColor=white" />
+<img alt="Language" src="https://img.shields.io/badge/RUST-2021-DEA584?style=for-the-badge&logo=rust&logoColor=white" />
+<img alt="Graphics" src="https://img.shields.io/badge/GRAPHICS-DIRECT3D%2012-9B5DE5?style=for-the-badge" />
+<img alt="Target" src="https://img.shields.io/badge/TARGET-RTX%205060-76B900?style=for-the-badge&logo=nvidia&logoColor=white" />
+<img alt="Status" src="https://img.shields.io/badge/STATUS-EXPERIMENTAL-FFB347?style=for-the-badge" />
 
-The adaptation will prioritize: correct NVIDIA adapter selection and capability reporting; shader-model/mesh-shader compatibility; VRAM-budget-aware resource residency for an 8 GB card; and reproducible Windows builds and tests. GPU runtime performance must be measured on a real RTX 5060 before any performance claim is made. Deterministic unit tests cover the existing VRAM-retention thresholds at an 8 GB budget. The first CI run exposed an incorrect expected boundary in the new test (68% was confused with 75%); that boundary was corrected. On the next completed Windows CI run, both the standard workspace tests and the all-features diagnostics tests passed. Clippy then identified a manually implemented ceiling division in the test helper; this was replaced with Rust's `div_ceil()` method. The subsequent full Windows CI run passed all three validation jobs (standard tests, all-features diagnostics tests, and Clippy), including the `div_ceil()` correction. Additional unit tests lock down the AMD-only wide indirect-dispatch rule: NVIDIA and Intel remain on the standard 65,535-group limit. These tests were validated in completed Windows CI run #45957825643 on merge commit `d648dd3`; all four jobs (standard tests, diagnostics tests, Clippy, and the final check) passed. A later PR validation exposed a race in `host::refresh_tests::unchanged_ranges_are_known` when the default test harness ran GPU watch-journal tests in parallel; the default CI test command is now serialized, matching the diagnostics job, so shared process-wide watch state is not mutated concurrently by unit tests. The adjustment was confirmed by Windows CI run #45959375704 on commit `c4b7033`: the default tests passed with one test thread, the all-features diagnostics tests passed, Clippy passed, and the aggregate check passed. The VRAM policy itself has not been tuned without RTX 5060 hardware measurements. Host startup diagnostics also report whether the adapter is AMD and whether the AMD RDNA-specific shader translation path is enabled; NVIDIA and Intel adapters keep that path disabled. This diagnostic change passed Windows CI run #45962343466: default tests, all-features diagnostics tests, Clippy, and the aggregate check all succeeded. The RDNA gate is now a shared pure decision function with regression tests for AMD RDNA (32–64), NVIDIA/Intel, AMD wave64-only, wave32-only, and unexpected wave ranges. The change passed Windows CI run #45963757941: standard tests, all-features diagnostics tests, Clippy, and the aggregate check all succeeded. The shader audit also added a device-independent regression test proving that console wave64 shaders using either `v_permlane16` or `v_permlanex16` can select a 32-lane host wave; these row-local operations do not require cross-half wave64 behavior. The new test and documentation passed Windows CI run #45966073953: Clippy, default workspace tests, all-features diagnostics tests, and the aggregate check all completed successfully. A further regression test now covers `ds_swizzle_b32`, confirming that this row-local 32-lane operation also selects wave32 for a console wave64 shader. The host pipeline cache now uses 256 same-name load-lock stripes selected directly from the final byte of its BLAKE3 pipeline key, instead of 64 stripes selected by a second polynomial hash. A deterministic distribution test covers 4,096 generated pipeline keys. Pipeline-call diagnostics also use 64 thread-ID-sharded tracking locks instead of one global mutex, so parallel workers no longer contend on a single bookkeeping lock when entering and leaving library calls; a 32-bit multiplicative hash selects the shard without a 64-bit multiply or a remainder operation, and the removal report still gathers active calls from every shard. Completed-call removal now uses `swap_remove` after locating the matching entry, avoiding the tail shift of `Vec::retain`; a regression test checks that other active calls remain present and that a repeated stale removal is harmless. Unit tests check that both 4,096 sequential and 4,096 four-byte-aligned worker IDs cover all 64 shards. The set of title pipelines remembered for early creation is also split across 64 digest-selected locks: concurrent draw/dispatch threads no longer serialize every lookup and insertion behind one global mutex. Its global 100,000-key limit is retained with an atomic reservation counter, and saving still takes a per-shard snapshot. Regression tests cover digest-shard distribution, duplicate handling, concurrent inserts, and enforcement of the 100,000-key global limit. These changes target avoidable CPU-side lock contention; their real frame-time effect still needs measurement on the RTX 5060.
+[Quick start](#-quick-start) · [RTX 5060 status](#-rtx-5060-status) · [Optimisations](#-cpu--pipeline-optimisations) · [Testing](#-build--validation) · [Credits](#-credits)
 
-## The goal
+</div>
 
-**A stable 30 fps or more without ray tracing, then as high a frame rate and as
-low frame times as the PC allows**, with the NVIDIA RTX 5060 as the first target
-for this fork. Existing AMD results remain reference measurements only.
+---
 
-The way there is **porting, not emulating**: patching the title's renderer so it
-behaves the way a PC renderer does, rather than having the layer watch and copy
-the console's shared memory every frame. Shaders are translated ahead of time
-into a versioned store that is kept between builds. Ray tracing stays optional
-and off by default. The picture comes after the frame rate: texture pop-in and
-lighting that is too bright or too dark when walking indoors are next in line.
+> [!IMPORTANT]
+> **RTX 5060 compatibility and playable performance are not yet demonstrated.**
+> The project has automated Windows CI coverage, but CI does not run on a physical RTX 5060. No FPS, frame-time or VRAM improvement is claimed without measurements from real hardware.
 
-**This repository contains no game files, code or assets.** You need your own
-copy of the game. It is not affiliated with or endorsed by the game's developer
-or publisher.
+## ✦ Project overview
 
-## Where it stands (2026-11-26)
+This repository is a fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer for running an Xbox Series title on Windows from files supplied by the user.
 
-The measurements below come from one Windows 11 PC with an Intel i9-12900K,
-64 GB of system RAM and a Radeon RX 7900 XTX (24 GB of dedicated video memory).
-Ray tracing was off for these runs.
+This fork concentrates on:
 
-| | |
+- NVIDIA GeForce support and accurate adapter/capability diagnostics.
+- Direct3D 12 and shader-path compatibility.
+- Memory-conscious behaviour for GPUs with 8 GB of VRAM.
+- Reducing avoidable CPU-side contention in pipeline loading and diagnostics.
+- Reproducible Windows builds, automated regression tests and a simpler test launcher.
+
+The work is experimental. It does not turn every Xbox title into a working Windows game, and this repository does not include game files or copyrighted game assets.
+
+## ◈ RTX 5060 status
+
+| Area | Current status |
 |---|---|
-| City street, Series S profile, renderer patches 1, 2, 5, 6 and 7 on | about 45 ms a frame (about 22 fps, 44.9 ms in run merge-5) |
-| Same, patches 1, 2, 5 and 6 | 45.6 ms, p95 47 ms |
-| Same, patches 1, 2 and 5 | 47.3 ms (about 21 fps), p95 49 ms |
-| Series X profile, patches 1+2 | about 53 ms (about 19 fps) |
-| Same scene before the patches | 57-75 ms (13-17 fps) |
-| Shaders the title uses that translate | all of them (25,790 of 25,985; the rest are unused geometry shaders) |
-| Memory | about 30 GB of private memory, 10.5 GB of VRAM: **64 GB of RAM recommended** for now |
+| Host graphics API | Direct3D 12 |
+| Adapter discovery | Generic DXGI selection with startup diagnostics |
+| NVIDIA RDNA translation path | Explicitly disabled; AMD-only path remains gated |
+| NVIDIA RTX 5060 runtime | Not yet validated on physical hardware |
+| 8 GB VRAM policy | Regression-tested thresholds; not yet tuned from RTX 5060 measurements |
+| Windows x64 build | Automated package workflow available |
+| Real game performance | No RTX 5060 FPS/frame-time result published |
 
-It started at 280 ms a frame in the same scenes three days earlier. What sets
-the frame now is the one thread that submits the title's work to the card
-(about 40 ms); the card itself needs about 36 ms and now waits about 7 ms a frame with nothing queued.
+### Hardware evidence — keep the results separate
 
-### Reports from other GPUs
+The inherited reference measurements were collected on an Intel Core i9-12900K, 64 GB RAM and a Radeon RX 7900 XTX (24 GB VRAM), with ray tracing disabled. They are **not RTX 5060 results**.
 
-| GPU and build | What the contributor observed |
+| Reference scene / configuration | Reported result |
+|---|---:|
+| City street, Series S profile, patches 1, 2, 5, 6 and 7 | ~44.9 ms/frame (~22 FPS) |
+| Same scene, patches 1, 2, 5 and 6 | 45.6 ms/frame, p95 47 ms |
+| Same scene, patches 1, 2 and 5 | 47.3 ms/frame, p95 49 ms |
+| Series X profile, patches 1 and 2 | ~53 ms/frame (~19 FPS) |
+
+An inherited RTX 3090 report showed partial execution at approximately 0.53–0.55 seconds per frame. That does not establish RTX 5060 compatibility.
+
+## ✦ CPU & pipeline optimisations
+
+Recent work targets CPU overhead around the host pipeline library and diagnostics:
+
+| Component | Change |
 |---|---|
-| Radeon RX 9060 XT (16 GB), `cd8dfc0` with local changes | In the same Series X interior at 1080p, the game averaged 19.8 fps with ray tracing off and 15.6 fps with it on. Indirect lighting showed white patches and dark smears. [Run settings and results](https://github.com/Belobug/VIctory-Belobug-AMD/issues/313) |
-| GeForce RTX 3090 (24 GB), `a-publier@cd8dfc0` | The prison rendered. Two warm Series S runs averaged 545 and 532 ms per frame. The contributor reported 10.0 and 10.2 GB of VRAM in those runs. [Run settings and results](https://github.com/Belobug/VIctory-Belobug-AMD/issues/333) |
-| Intel Arc B580 (12 GB), revision unreported | Startup and initial menu navigation worked. Further menu interaction slowed to about 0.7 fps before D3D12 device removal. [Crash report](https://github.com/Belobug/VIctory-Belobug-AMD/issues/98) |
+| Pipeline load guards | 256 digest-selected lock stripes instead of 64 |
+| Pipeline-call diagnostics | 64 thread-ID-sharded tracking locks instead of one global lock |
+| Diagnostic call removal | `swap_remove` avoids shifting the remaining vector entries |
+| Early-pipeline tracking | 64 digest-selected shards with an atomic global limit of 100,000 keys |
+| Early-pipeline key storage | 128-bit BLAKE3 prefixes stored as `u128`, rather than individually allocated strings |
+| Persistence | Existing 32-character hexadecimal `early-pipelines.txt` format retained |
 
-The 10.5 GB of VRAM in the RX 7900 XTX table is the usage reported for that run.
-Memory use and frame time depend on the scene and settings. The [ray-tracing notes](docs/fork-ray-tracing.md)
-describe which lighting paths run and the remaining rendering issues.
+These changes reduce specific sources of lock contention and allocation overhead. They do **not** prove higher FPS or lower frame times; those effects require controlled measurements on the target GPU.
 
-### Renderer patches (off by default while they are tested)
+## ◈ Quick start
 
-| Switch | What it does |
-|---|---|
-| `VICTORY_PORT_CONSTANTS=1` | The title's 174 MB constants heap is read by the card where the title writes it: no uploads, no fills |
-| `VICTORY_PORT_DESCRIPTORS=1` | The title's descriptor-table stores are patched (byte-checked) to report the slots they write, instead of a scan of ~600,000 slots a frame |
-| `VICTORY_PORT_CBV=1` | Translated shaders read constant buffers in place as raw bytes (~22,000 fills a frame to none; -4.7 ms) |
-| `VICTORY_PORT_GUARD=1` | The write guards' lock is shared by faults and refreshes, with a claim per 64 KiB block; the submission's planning runs beside it (title threads' waits 29 ms to ~2 ms a frame; -2 ms) |
-| `VICTORY_PORT_JOURNAL=1` | The heaps' records are asked for at the title's submit, and the journal's notes are split into 64 parts with locks of their own (the submit thread's waits ~5 ms + 1 ms to ~0.3 ms; -1 to -3 ms) |
+### Option A — one-click Windows launcher
 
-### Other switches
+1. Download the latest available `VIctory-RTX5060-Windows-x64` artifact from the [GitHub Actions runs](https://github.com/valouddsite/VIctory-Belobug-Nvidia/actions).
+2. Extract the ZIP to a writable folder.
+3. Double-click `VIctory-Launcher.cmd`.
+4. Select your own game executable.
+5. Choose the normal or safe profile.
+6. Read the generated log in `logs/` if startup fails.
 
-| Switch | What it does |
-|---|---|
-| `--console series-s` | The Series S profile: 1080p output, about 5 ms faster, a softer picture |
-| `VICTORY_OUTPUT=1920x1080` | The title renders to that output size itself (Series X profile; about 16 ms less card time) |
-| `VICTORY_FRAME_INTERVAL_MS=16.667` | Lets the title go above 30 fps (menus and videos reach 60; the game's clock stays right) |
-| `VICTORY_AMBIENT_SETTLE` | How fast light settles after walking indoors (on by default, `250,3`; `0` turns it off) |
-| `VICTORY_TEXTURE_STORE=1` | Converted textures kept between runs (about 8 ms a frame for now: off) |
-| `VICTORY_KBM_GTA=1` | Optional GTA V PC-style keyboard and mouse mapping on the stand-in pad: `F2` or `` ` `` (`~`) toggles mouse-look and auto-hides the cursor while locked (`Esc`/`P`/focus loss unlocks and restores it), LMB/RMB = RT/LT, MMB/`C` = R3, `Shift` = A, `Space` = X, `R` = B, `F` = Y, `Tab` = LB, `Q` = RB, `Ctrl` = L3, `E` = D-pad Right, `V` = View. Tune with `VICTORY_MOUSE_SENS` (default `1.0`) and `VICTORY_MOUSE_INVERT_Y=1` (or pass via `scripts\play.ps1 -More @{VICTORY_KBM_GTA='1'}`) |
+The launcher creates `victory.toml` from the example configuration when needed. The selected game directory is passed only to that launch session. PowerShell's temporary execution-policy bypass is scoped to the launcher process; it does not change the machine-wide or user-wide policy.
 
-What is known to be wrong:
+### Option B — manual launch
 
-- Trees, signs and far objects flicker in the distance in some places.
-- Lighting is too bright or too dark after walking indoors, until the title has
-  run for a while; rooms with little direct light are too dark without `-RayTracing`.
-- Textures of what just came into view appear late while the title streams.
-- The first run of a new build stutters while the driver makes pipelines
-  (`victory warm` makes them ahead).
-- Recording a frame in the world makes the title's own watchdog end it.
+Requirements:
 
-## Windows one-click launcher
+- Windows 10/11 x64.
+- An AVX2-capable CPU.
+- A Direct3D 12 GPU with Shader Model 6.6 and mesh-shader support.
+- The pinned Rust toolchain and Visual Studio C++ build tools when building from source.
+- Your own legally obtained game files.
 
-For the downloadable Windows test package, extract the ZIP and double-click
-`VIctory-Launcher.cmd`. Select your own game executable in the file picker,
-then choose the normal profile or the safe profile. The launcher creates
-`victory.toml` from the example when needed, passes the selected game folder
-only to that launch session, checks the resolved configuration, and records
-a diagnostic log in `logs/`. It does not change the machine or user
-PowerShell execution policy; the temporary bypass is limited to the launcher
-process started by the CMD file.
-
-The manual `scripts\\play.ps1` route remains available for advanced settings.
-Keep the game files outside the VIctory folder and do not run the launcher as
-Administrator.
-
-## How to run it
-
-You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
-model 6.6 and mesh shaders, Rust (the toolchain is pinned), the MSVC build
-tools, and your own dump of the title.
+Build and launch:
 
 ```powershell
 git clone https://github.com/valouddsite/VIctory-Belobug-Nvidia
 cd VIctory-Belobug-Nvidia
-copy victory.example.toml victory.toml      # then set your paths, outside this folder
+Copy-Item victory.example.toml victory.toml
+# Edit victory.toml and set your own paths.
 cargo build --locked --profile diag -p victory --features diagnostics
-scripts\play.ps1 -Exe <path of your copy's executable>
+.scriptsplay.ps1 -Exe "D:\path\to\your\game.exe"
 ```
 
-The launcher requests light device removal diagnostics (DRED) by default with
-`-Build diag`. DRED requires `--features diagnostics`. For a release binary
-built with that feature, request DRED with
-`-Build release -More @{VICTORY_D3D12_DRED='light'}`.
+For advanced options, see [docs/rtx-5060-test-release.md](docs/rtx-5060-test-release.md).
 
-`scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
-something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
+## ⬡ Windows test package
 
-For PC FSR 4.1.2, set `[paths].fidelityfx_dir` in `victory.toml` or
-`VICTORY_FIDELITYFX_DIR` to the folder containing AMD's signed
-`amd_fidelityfx_upscaler_dx12.dll`. Use the DirectX 12 upscaler in
-`Kits/FidelityFX/signedbin`. [AMD FSR SDK 2.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v2.4.0/Kits/FidelityFX/signedbin)
+The [Windows test package workflow](https://github.com/valouddsite/VIctory-Belobug-Nvidia/actions/workflows/windows-test-package.yml) builds a Windows x64 ZIP containing:
 
-`scripts\play.ps1 -Exe <path> -Fsr4K quality` selects 2560×1440 input for
-the retail 1.0.2.1 Series X 4K SDR profile. `balanced` selects 2258×1270
-and `performance` selects 1920×1080. All three output 3840×2160. With
-`victory run` directly, set `VICTORY_FSR_4K` to the preset name.
-AMD's SDK offers FSR 4.1.2 for some cards only. Where it does not, the
-newest FSR 3.1 it offers is used in its place and the log says so; its
-picture differs from FSR 4's. Where it offers neither, the run stops
-before the title starts and names the versions that were offered.
-The log reports the provider at context creation and the actual input and
-output sizes at the first successful temporal dispatch. The title profile
-and PC FidelityFX bridge were ported from [DexNom/VIctory](https://github.com/DexNom/VIctory/commit/ab34a8b21477c94da2a6cf07249138e8bc84602e).
+- `victory.exe`
+- `victory.example.toml`
+- `VIctory-Launcher.cmd`
+- PowerShell launch scripts
+- `TEST-ON-YOUR-PC.txt`
 
-On a hybrid-graphics PC, the runtime and offline pipeline checks prefer a
-high-performance adapter with Shader Model 6.6. The runtime logs its adapter
-name, PCI vendor and device IDs, and dedicated VRAM. It also reports the host wave-lane range and, when mesh-shader capability is queried, the reported mesh-shader tier and highest shader model. Set
-`VICTORY_D3D12_ADAPTER` to a zero-based DXGI index or part of the adapter's
-name to select it explicitly. With the launcher, pass
-`-More @{VICTORY_D3D12_ADAPTER='NVIDIA'}`.
+GitHub Actions artifacts are temporary and expire according to the retention period configured in the workflow. A successful CI build verifies compilation and automated tests only; it is not a GPU hardware certification.
 
-Before the first run, ahead of time (both can be stopped and go on later):
+## ◈ Renderer switches
+
+The following experimental renderer patches are opt-in while they are being tested:
+
+| Variable | Purpose |
+|---|---|
+| `VICTORY_PORT_CONSTANTS=1` | Read the title's constants heap directly on the GPU |
+| `VICTORY_PORT_DESCRIPTORS=1` | Track descriptor-table writes rather than scanning the full table |
+| `VICTORY_PORT_CBV=1` | Read translated-shader constant buffers in place |
+| `VICTORY_PORT_GUARD=1` | Split write-guard work across 64 KiB blocks |
+| `VICTORY_PORT_JOURNAL=1` | Shard heap journal records and reduce submission-thread waits |
+
+Do not enable experimental switches blindly. Change one variable at a time and keep the logs and exact configuration for comparison.
+
+## ⌘ Build & validation
+
+The Windows CI pipeline checks:
+
+- `cargo test --workspace --locked -- --test-threads=1`
+- `cargo test --workspace --all-features --locked -- --test-threads=1`
+- Clippy and diagnostics compilation
+- Windows launcher syntax and package-entry validation
+
+Run locally:
 
 ```powershell
-target\diag\victory.exe shaders <the shader archives>   # every shader translated, minutes
-target\diag\victory.exe warm --used                     # pipelines earlier runs drew with, for a new driver or build
+cargo test --workspace --locked -- --test-threads=1
+cargo test --workspace --all-features --locked -- --test-threads=1
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Commands, debugging switches and upstream's own description:
-[docs/README-fxceless.md](docs/README-fxceless.md). Every `VICTORY_...` switch is
-described in a comment where it is read.
+Test results should always be reported with the exact workflow run and commit. A test passing on GitHub's Windows runner must never be described as a successful test on an RTX 5060.
 
-## Windows RTX 5060 test package
+## ◈ Project notes
 
-An experimental Windows x64 package can be built by the **Windows test package**
-workflow. After that workflow is merged into the repository's default branch,
-open **Actions → Windows test package → Run workflow**, wait for completion,
-then download the `VIctory-RTX5060-Windows-x64` artifact. The ZIP contains
-`victory.exe`, the example configuration, the PowerShell launcher and a
-local-test guide. Artifacts are retained for 14 days.
+- [RTX 5060 test-release guide](docs/rtx-5060-test-release.md)
+- [Findings and performance notes](docs/findings.md)
+- [Ray-tracing notes](docs/fork-ray-tracing.md)
+- [Asset policy](docs/asset-policy.md)
 
-Start with a copy of `victory.example.toml`, set your own game-data path, then
-run `scripts\play.ps1 -Exe <your-game-executable> -Build release`. The launcher
-uses `target\release\victory.exe` in a source checkout and the packaged
-`victory.exe` at the extracted folder root in the downloadable ZIP. If needed,
-retry with `-Safe`. Full setup and reporting instructions are in
-[docs/rtx-5060-test-release.md](docs/rtx-5060-test-release.md).
+## ✦ Credits
 
-This is an **experimental test build**, not a stable or hardware-validated
-RTX 5060 release. Automated Windows CI does not prove real rendering,
-stability, 8 GB VRAM sufficiency or frame rate on your PC.
+This repository preserves and builds on work from other projects and contributors:
 
-## What is different here
-
-In short; the reasons and the measurements are in [docs/findings.md](docs/findings.md).
-
-- **List calls are written down, not carried out, on the title's threads**
-  (`VICTORY_THIN`): eight threads of ours translate them.
-- **Submissions are prepared by a thread of ours and joined**
-  (`VICTORY_ASYNC_SUBMIT`, `VICTORY_JOIN_PARTS`), with what can be spread over
-  threads spread: refreshes, compares (AVX2), descriptor records, landings.
-- **What shaders wrote comes back beside the write guards**, by the dwords that
-  changed, on a thread of its own (`VICTORY_RELAY`, `VICTORY_LAND`).
-- **Buffer fills that need bytes still on the card are done on the card**
-  (`VICTORY_CARD_STEPS`) instead of waiting for it.
-- **The title's writes are caught more cheaply**: one view opened at a fault,
-  blocks that rest, places in the title's code that look before they write.
-- **Textures go up on a copy queue of their own** and a slot shows one only after
-  its upload ran, which also ended a device loss that came every 15 minutes or so.
-- **Boats float**: textures that shaders write and the title's CPU reads go back
-  to title memory (from fxceless and Geckomacabre, on by default here).
-- **Frame record and replay** with per-pass times and shader variants compared
-  turn by turn ([docs/replay.md](docs/replay.md)).
-
-## Credits
-
-This is a tree of other people's work with more on top. The history is kept, and
-commits taken from elsewhere name the commit and its author.
-
-- **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
-  contributors: the loader, the runtime services, the Direct3D 12 back end and
-  the shader recompiler.
-- **[fxceless/victory-fork](https://github.com/fxceless/victory-fork)**: the fork
-  this one started from, and the people whose pull requests it carries.
-- **[DexNom/VIctory](https://github.com/DexNom/VIctory)**: ray tracing fixes,
-  cube gradients, sparse textures.
-- **[Belobug/VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)**:
-  the ambient light idea, pipeline workers, and work by romainhedouin.
-- **[FQY55kai/ZJOU-VICTORY](https://github.com/FQY55kai/ZJOU-VICTORY)**.
-- **[myokex/victory-amd](https://github.com/myokex/victory-amd)**: the guard over
-  every view of a page (with Spexivus, joroyt and tightfall), and Joshua Odom's
-  reads into title memory.
-- **Geckomacabre** and **cxy0072019-sketch**: the texture read-back.
-- **[XCL](https://github.com/ivall/xcl)** (GPL-2.0-only) was read for how the same
-  title behaves under another layer; no code of it is here.
-- This fork's changes were made with [Claude Code](https://claude.com/claude-code).
+- [VIctory](https://github.com/Marvisak/VIctory) — original compatibility layer, loader, runtime services, Direct3D 12 backend and shader recompiler.
+- [fxceless/victory-fork](https://github.com/fxceless/victory-fork) — upstream fork lineage and contributions.
+- [DexNom/VIctory](https://github.com/DexNom/VIctory) — ray-tracing fixes, cube gradients and sparse-texture work.
 
 ## License
 
-GPL-3.0-or-later, as VIctory. See [LICENSE](LICENSE); the one file that is not
-covered is named in [docs/asset-policy.md](docs/asset-policy.md).
+GPL-3.0-or-later, as VIctory. See [LICENSE](LICENSE). The file excluded from that license is identified in [docs/asset-policy.md](docs/asset-policy.md).

@@ -817,8 +817,17 @@ pub(crate) fn note_time(key: &str, ms: u64) {
 const USED_SHARDS: usize = 64;
 
 struct UsedPipelines {
-    shards: [Mutex<HashSet<String>>; USED_SHARDS],
+    // Pipeline names are 128-bit BLAKE3 prefixes rendered as 32 hex
+    // characters. Keep the parsed value rather than a separately allocated
+    // String in every hash-table entry.
+    shards: [Mutex<HashSet<u128>>; USED_SHARDS],
     len: std::sync::atomic::AtomicUsize,
+}
+
+fn parse_pipeline_key(key: &str) -> Option<u128> {
+    (key.len() == 32 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| u128::from_str_radix(key, 16).ok())
+        .flatten()
 }
 
 impl UsedPipelines {
@@ -832,12 +841,15 @@ impl UsedPipelines {
     fn from_lines(lines: impl Iterator<Item = String>) -> Self {
         let used = Self::empty();
         for key in lines {
-            if key.is_empty() || used.len.load(Ordering::Relaxed) >= EARLY_MAX {
+            if used.len.load(Ordering::Relaxed) >= EARLY_MAX {
                 continue;
             }
+            let Some(parsed) = parse_pipeline_key(&key) else {
+                continue;
+            };
             let shard = load_lock_index(&key) % USED_SHARDS;
             let mut keys = used.shards[shard].lock().unwrap_or_else(|e| e.into_inner());
-            if keys.insert(key) {
+            if keys.insert(parsed) {
                 used.len.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -845,17 +857,23 @@ impl UsedPipelines {
     }
 
     fn contains(&self, key: &str) -> bool {
+        let Some(parsed) = parse_pipeline_key(key) else {
+            return false;
+        };
         let shard = load_lock_index(key) % USED_SHARDS;
         self.shards[shard]
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(key)
+            .contains(&parsed)
     }
 
     fn insert(&self, key: &str) -> bool {
+        let Some(parsed) = parse_pipeline_key(key) else {
+            return false;
+        };
         let shard = load_lock_index(key) % USED_SHARDS;
         let mut keys = self.shards[shard].lock().unwrap_or_else(|e| e.into_inner());
-        if keys.contains(key) {
+        if keys.contains(&parsed) {
             return false;
         }
         let reserved = self.len.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |len| {
@@ -864,7 +882,7 @@ impl UsedPipelines {
         if reserved.is_err() {
             return false;
         }
-        keys.insert(key.to_owned());
+        keys.insert(parsed);
         true
     }
 
@@ -876,7 +894,7 @@ impl UsedPipelines {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .iter()
-                    .cloned(),
+                    .map(|key| format!("{key:032x}")),
             );
         }
         keys
@@ -1011,6 +1029,23 @@ mod tests {
         }
         assert_eq!(used.len.load(Ordering::Relaxed), keys.len());
         assert_eq!(used.snapshot().len(), keys.len());
+    }
+
+    #[test]
+    fn early_pipeline_keys_are_compact_and_round_trip_from_disk() {
+        let first = "0123456789abcdef0123456789abcdef".to_owned();
+        let second = "fedcba9876543210fedcba9876543210".to_owned();
+        let loaded = UsedPipelines::from_lines(
+            [first.clone(), second.clone(), first.clone(), "not-a-digest".to_owned()]
+                .into_iter(),
+        );
+
+        assert!(loaded.contains(&first));
+        assert!(loaded.contains(&second));
+        assert!(!loaded.contains("not-a-digest"));
+        assert_eq!(loaded.len.load(Ordering::Relaxed), 2);
+        let snapshot: HashSet<_> = loaded.snapshot().into_iter().collect();
+        assert_eq!(snapshot, HashSet::from([first, second]));
     }
 
     #[test]

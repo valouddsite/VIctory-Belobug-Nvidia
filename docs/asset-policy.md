@@ -17,6 +17,7 @@ In any form (files, string literals, fixtures, snapshots, docs):
 ## Allowed
 
 * our own code that understands formats;
+* original, hand-authored text-based SVG branding (no embedded raster assets or external game material);
 * build identities: BLAKE3 of an executable, CodeView GUID/age;
 * per-build offsets of functions we hook, under names we choose;
 * byte-pattern signatures that locate functions or data in the executable;
@@ -45,7 +46,7 @@ user's dump), `test_titles`, and `cache_dir` for everything derived
 1. `.gitignore` keeps common data types out of `git status`.
 2. `cargo xtask policy` (run by the pre-commit hook; install with
    `cargo xtask install-hooks`) is an allowlist: files must have an allowed
-   type, be under 640 KiB, contain no binary data or known binary
+   type (including original SVG branding), be under 640 KiB, contain no binary data or known binary
    signatures, and hold no long hex/base64 runs. Exceptions need an entry
    with a reason in `xtask/src/policy.rs`.
 3. At runtime, everything that writes derived data calls

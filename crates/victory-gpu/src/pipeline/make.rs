@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn pending_pipeline_is_recorded_for_the_next_launch() {
         let mut p = Pending::new(Vec::new(), None);
-        p.key = "pending-pipeline-test".to_owned();
+        p.key = super::super::library::name("compute", b"pending-pipeline-test", &[b"cs"], "state");
         // Simulate a worker that has taken the job but cannot finish it yet.
         p.queue_state.store(MAKING, Ordering::Relaxed);
         let p = Arc::new(p);
