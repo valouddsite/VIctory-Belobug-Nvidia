@@ -84,6 +84,8 @@ A preflight module now defines the required input contract, quality names and ou
 
 See [docs/dlss-integration-status.md](docs/dlss-integration-status.md) for the remaining Streamline and renderer work, including the limits of the current present-serial association. Do not treat this groundwork as a working DLSS implementation or as an RTX 5060 hardware test.
 
+The current renderer groundwork also includes a CPU-side temporal frame planner: it tracks frame continuity and history resets, generates deterministic Halton(2,3) sub-pixel jitter samples, and validates the temporal metadata contract. This still does not create GPU history textures, generate motion vectors, apply projection jitter to the guest camera, or activate Streamline/DLSS.
+
 ## ✦ CPU & pipeline optimisations
 
 Recent work targets CPU overhead around the host pipeline library and diagnostics:
