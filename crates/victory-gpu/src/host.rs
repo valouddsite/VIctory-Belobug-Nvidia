@@ -36,6 +36,15 @@ pub(crate) fn texture_state(state: u32) -> u32 {
 /// ring of host descriptors is enough.
 const RTV_RING: u32 = 1024;
 
+/// Owns a dedicated final-resolution texture that is allowed to be used
+/// as a DLSS UAV output. The caller must retain it through every GPU use and
+/// arrange the required state transitions before evaluating or presenting it.
+#[allow(dead_code)]
+pub(crate) struct DlssOutputTarget {
+    pub(crate) resource: ID3D12Resource,
+    pub(crate) desc: crate::dlss::DlssOutputTargetDesc,
+}
+
 pub(crate) struct Host {
     pub(crate) device: ID3D12Device,
     queue: ID3D12CommandQueue,
@@ -9155,6 +9164,114 @@ impl Host {
                 None
             }
         }
+    }
+
+    /// Plan output allocation against DXGI's current local-memory budget.
+    ///
+    /// DXGI reports the process budget and current process usage separately;
+    /// their saturating difference is the conservative available budget used
+    /// by the DLSS allocation policy. A missing adapter/budget refuses a new
+    /// allocation rather than guessing.
+    #[allow(dead_code)]
+    pub(crate) fn plan_dlss_output_allocation(
+        &self,
+        current: Option<&DlssOutputTarget>,
+        requested: crate::dlss::DlssOutputTargetDesc,
+    ) -> Result<
+        crate::dlss::DlssOutputAllocationPlan,
+        crate::dlss::DlssOutputAllocationError,
+    > {
+        let available_local_bytes = self
+            .video_memory()
+            .map(|memory| memory[0].saturating_sub(memory[1]));
+        crate::dlss::DlssOutputAllocationPlan::new(
+            current.map(|target| target.desc),
+            requested,
+            available_local_bytes,
+        )
+    }
+
+    /// Reuse a matching output target, or allocate a new one only when DXGI's
+    /// current local-memory budget covers the conservative estimate.
+    #[allow(dead_code)]
+    pub(crate) fn get_or_create_dlss_output_target(
+        &self,
+        current: Option<&DlssOutputTarget>,
+        desc: crate::dlss::DlssOutputTargetDesc,
+    ) -> windows::core::Result<DlssOutputTarget> {
+        let plan = self
+            .plan_dlss_output_allocation(current, desc)
+            .map_err(|error| {
+                tracing::warn!(?error, "refusing DLSS output allocation");
+                windows::core::Error::empty()
+            })?;
+        match plan.action {
+            crate::dlss::DlssOutputAllocationAction::ReuseExisting => {
+                let current = current.ok_or_else(windows::core::Error::empty)?;
+                Ok(DlssOutputTarget {
+                    resource: current.resource.clone(),
+                    desc: current.desc,
+                })
+            }
+            crate::dlss::DlssOutputAllocationAction::AllocateNew => {
+                self.allocate_dlss_output_target(desc)
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn create_dlss_output_target(
+        &self,
+        desc: crate::dlss::DlssOutputTargetDesc,
+    ) -> windows::core::Result<DlssOutputTarget> {
+        self.get_or_create_dlss_output_target(None, desc)
+    }
+
+    /// Allocate a dedicated default-heap 2D output texture with UAV capability.
+    ///
+    /// This deliberately does not hook into presentation yet: the current
+    /// renderer has no valid temporal inputs or Streamline evaluation call.
+    /// The returned resource starts in COMMON and must be transitioned by the
+    /// future DLSS command-list integration before it is read or written.
+    #[allow(dead_code)]
+    fn allocate_dlss_output_target(
+        &self,
+        desc: crate::dlss::DlssOutputTargetDesc,
+    ) -> windows::core::Result<DlssOutputTarget> {
+        let heap = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+        let resource_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Width: u64::from(desc.width),
+            Height: desc.height,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT(desc.format.dxgi_format() as i32),
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+            Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            ..Default::default()
+        };
+        let mut resource = None;
+        // SAFETY: the validated descriptor describes a single-sample 2D
+        // texture; the returned COM resource is retained by DlssOutputTarget.
+        unsafe {
+            self.device.CreateCommittedResource(
+                &heap,
+                D3D12_HEAP_FLAG_NONE,
+                &resource_desc,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut resource,
+            )?;
+        }
+        let resource = resource.ok_or_else(windows::core::Error::empty)?;
+        Ok(DlssOutputTarget { resource, desc })
     }
 
     pub(crate) fn upload_buffer(&self, size: u64) -> Option<(ID3D12Resource, *mut u8)> {

@@ -3,7 +3,7 @@ name: Windows test package
 on:
   workflow_dispatch:
   push:
-    branches: [release/rtx-5060-test]
+    branches: [release/rtx-5060-test, a-publier]
 
 permissions:
   contents: read
@@ -14,6 +14,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Версия NuGet-пакета Microsoft.Direct3D.D3D12. Должна соответствовать
+  # SDK-версии, которую agility.rs передаёт в CreateDeviceFactory
+  # (1.614.x -> 614, 1.616.x -> 616, и т.д.).
+  AGILITY_NUGET_VERSION: 1.616.1
 
 jobs:
   package:
@@ -36,6 +40,21 @@ jobs:
       - name: Build optimized Windows executable
         run: cargo build --locked --release -p victory
 
+      - name: Fetch D3D12 Agility SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = $env:AGILITY_NUGET_VERSION
+          Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/$ver" -OutFile agility.zip
+          Expand-Archive agility.zip -DestinationPath agility -Force
+          New-Item -ItemType Directory -Force -Path dist-agility | Out-Null
+          $bin = 'agility/build/native/bin/x64'
+          foreach ($f in @('D3D12Core.dll', 'd3d12SDKLayers.dll')) {
+            if (-not (Test-Path (Join-Path $bin $f))) { throw "Agility SDK file missing in NuGet package: $f" }
+            Copy-Item (Join-Path $bin $f) dist-agility/
+          }
+          Get-ChildItem dist-agility | Format-Table Name, Length
+
       - name: Assemble test package
         shell: pwsh
         run: |
@@ -48,16 +67,17 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$package/scripts" | Out-Null
           Copy-Item 'scripts/play.ps1' "$package/scripts/"
           Copy-Item 'scripts/launcher.ps1' "$package/scripts/"
+          # D3D12 Agility SDK: agility.rs ищет D3D12Core.dll в <exe dir>\D3D12
+          New-Item -ItemType Directory -Force -Path "$package/D3D12" | Out-Null
+          Copy-Item 'dist-agility/*' "$package/D3D12/"
           # Catch PowerShell syntax errors and verify the packaged binary layout.
-          $tokens = $null
-          $parseErrors = $null
           foreach ($script in @('scripts/play.ps1', 'scripts/launcher.ps1')) {
             $tokens = $null
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $package $script), [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count -gt 0) { throw "Packaged script $script has PowerShell parse errors: $($parseErrors -join '; ')" }
           }
-          foreach ($required in @('victory.exe', 'VIctory-Launcher.cmd', 'victory.example.toml', 'scripts/play.ps1', 'scripts/launcher.ps1')) {
+          foreach ($required in @('victory.exe', 'VIctory-Launcher.cmd', 'victory.example.toml', 'scripts/play.ps1', 'scripts/launcher.ps1', 'D3D12/D3D12Core.dll')) {
             if (-not (Test-Path (Join-Path $package $required))) { throw "Required package file is missing: $required" }
           }
           @'
@@ -67,6 +87,12 @@ jobs:
           Requirements: Windows 10/11 x64, AVX2 CPU, Direct3D 12 GPU with Shader Model 6.6
           and mesh-shader support, current NVIDIA driver, and the MSVC runtime/build dependencies
           required by the project.
+
+          WINDOWS 10
+          The D3D12 folder next to victory.exe holds the Microsoft D3D12 Agility SDK runtime.
+          It lets Windows 10 22H2 (with update KB5029331 or newer) use Shader Model 6.6 and
+          mesh shaders. Keep the folder next to victory.exe. Without the update, the game
+          falls back to the inbox D3D12 (no mesh shaders). The log shows which one was used.
 
           QUICK START
           1. Extract this folder somewhere writable.
