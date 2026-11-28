@@ -842,3 +842,176 @@ mod temporal_metadata_tests {
         assert!(TemporalFrameMetadata { camera_cut: true, ..valid_metadata() }.requires_history_reset());
     }
 }
+
+
+/// Why temporal history must be discarded before a future DLSS SR evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalHistoryResetReason {
+    FirstFrame,
+    CameraCut,
+    RenderExtentChanged,
+    OutputExtentChanged,
+    FrameDiscontinuity,
+}
+
+/// Result of checking whether the previous frame's temporal history is usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemporalHistoryDecision {
+    pub use_previous_history: bool,
+    pub reset_reason: Option<TemporalHistoryResetReason>,
+}
+
+/// CPU-side continuity contract for temporal history.
+///
+/// This tracks frame sequence and dimensions only. It does not allocate,
+/// retain, clear or synchronize GPU history resources; a renderer integration
+/// must perform those operations before using temporal history.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TemporalHistoryTracker {
+    previous_frame: Option<u64>,
+    previous_render_extent: Option<(u32, u32)>,
+    previous_output_extent: Option<(u32, u32)>,
+}
+
+impl TemporalHistoryTracker {
+    /// Observe one frame and decide whether the preceding frame can be reused.
+    /// Invalid metadata is rejected without changing the tracked history.
+    pub fn observe(
+        &mut self,
+        frame: u64,
+        metadata: TemporalFrameMetadata,
+    ) -> Result<TemporalHistoryDecision, TemporalMetadataError> {
+        metadata.validate()?;
+
+        let reset_reason = match self.previous_frame {
+            None => Some(TemporalHistoryResetReason::FirstFrame),
+            Some(_) if metadata.camera_cut => Some(TemporalHistoryResetReason::CameraCut),
+            Some(previous) if frame != previous.saturating_add(1) => {
+                Some(TemporalHistoryResetReason::FrameDiscontinuity)
+            }
+            Some(_) if self.previous_render_extent != Some((metadata.render_width, metadata.render_height)) => {
+                Some(TemporalHistoryResetReason::RenderExtentChanged)
+            }
+            Some(_) if self.previous_output_extent != Some((metadata.output_width, metadata.output_height)) => {
+                Some(TemporalHistoryResetReason::OutputExtentChanged)
+            }
+            Some(_) => None,
+        };
+
+        self.previous_frame = Some(frame);
+        self.previous_render_extent = Some((metadata.render_width, metadata.render_height));
+        self.previous_output_extent = Some((metadata.output_width, metadata.output_height));
+
+        Ok(TemporalHistoryDecision {
+            use_previous_history: reset_reason.is_none(),
+            reset_reason,
+        })
+    }
+
+    /// Forget the tracked sequence after device loss, swap-chain recreation or
+    /// any renderer event that invalidates all temporal history.
+    pub fn invalidate(&mut self) {
+        self.previous_frame = None;
+        self.previous_render_extent = None;
+        self.previous_output_extent = None;
+    }
+}
+
+#[cfg(test)]
+mod temporal_history_tests {
+    use super::{
+        TemporalFrameMetadata, TemporalHistoryResetReason, TemporalHistoryTracker,
+    };
+
+    fn metadata() -> TemporalFrameMetadata {
+        TemporalFrameMetadata {
+            render_width: 1707,
+            render_height: 960,
+            output_width: 2560,
+            output_height: 1440,
+            motion_vector_width: 1707,
+            motion_vector_height: 960,
+            jitter_x: 0.25,
+            jitter_y: -0.25,
+            motion_vector_scale_x: 1.0,
+            motion_vector_scale_y: 1.0,
+            camera_cut: false,
+        }
+    }
+
+    #[test]
+    fn first_frame_resets_then_contiguous_frame_can_reuse_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        let first = tracker.observe(10, metadata()).unwrap();
+        assert_eq!(first.reset_reason, Some(TemporalHistoryResetReason::FirstFrame));
+        assert!(!first.use_previous_history);
+        let next = tracker.observe(11, metadata()).unwrap();
+        assert_eq!(next.reset_reason, None);
+        assert!(next.use_previous_history);
+    }
+
+    #[test]
+    fn camera_cut_resets_history_for_that_frame() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.observe(1, metadata()).unwrap();
+        let cut = TemporalFrameMetadata { camera_cut: true, ..metadata() };
+        let decision = tracker.observe(2, cut).unwrap();
+        assert_eq!(decision.reset_reason, Some(TemporalHistoryResetReason::CameraCut));
+        assert!(!decision.use_previous_history);
+        assert!(tracker.observe(3, metadata()).unwrap().use_previous_history);
+    }
+
+    #[test]
+    fn render_or_output_resize_resets_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.observe(1, metadata()).unwrap();
+        let render_resize = TemporalFrameMetadata {
+            render_width: 1600,
+            motion_vector_width: 1600,
+            ..metadata()
+        };
+        assert_eq!(
+            tracker.observe(2, render_resize).unwrap().reset_reason,
+            Some(TemporalHistoryResetReason::RenderExtentChanged)
+        );
+        let output_resize = TemporalFrameMetadata { output_width: 1920, ..render_resize };
+        assert_eq!(
+            tracker.observe(3, output_resize).unwrap().reset_reason,
+            Some(TemporalHistoryResetReason::OutputExtentChanged)
+        );
+    }
+
+    #[test]
+    fn skipped_or_repeated_frame_resets_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.observe(20, metadata()).unwrap();
+        assert_eq!(
+            tracker.observe(22, metadata()).unwrap().reset_reason,
+            Some(TemporalHistoryResetReason::FrameDiscontinuity)
+        );
+        assert_eq!(
+            tracker.observe(22, metadata()).unwrap().reset_reason,
+            Some(TemporalHistoryResetReason::FrameDiscontinuity)
+        );
+    }
+
+    #[test]
+    fn invalid_metadata_does_not_advance_history_state() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.observe(5, metadata()).unwrap();
+        let invalid = TemporalFrameMetadata { motion_vector_width: 0, ..metadata() };
+        assert!(tracker.observe(6, invalid).is_err());
+        assert!(tracker.observe(6, metadata()).unwrap().use_previous_history);
+    }
+
+    #[test]
+    fn explicit_invalidation_makes_the_next_frame_a_first_frame() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.observe(1, metadata()).unwrap();
+        tracker.invalidate();
+        assert_eq!(
+            tracker.observe(2, metadata()).unwrap().reset_reason,
+            Some(TemporalHistoryResetReason::FirstFrame)
+        );
+    }
+}
