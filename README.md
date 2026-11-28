@@ -203,3 +203,6 @@ GPL-3.0-or-later, as VIctory. See [LICENSE](LICENSE). The file excluded from tha
 
 
 DLSS temporal groundwork also includes a tested CPU-side history-continuity contract: it rejects invalid frame metadata without advancing state, and requests a history reset on the first frame, camera cuts, render/output extent changes, skipped or repeated frame IDs, and explicit renderer invalidation. This contract does not allocate or clear GPU history resources and does not activate DLSS.
+
+
+**Validation status:** the temporal-history branch has not yet received a GitHub Actions run. The PR is open and the workflow definition is present on both the PR branch and `a-publier`, but GitHub currently reports zero workflow runs and zero check runs for its latest commit. Do not treat this as a passing test result; CI validation remains pending.
