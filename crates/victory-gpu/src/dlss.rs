@@ -79,6 +79,87 @@ impl FrameInputs {
     }
 }
 
+/// Units used by the renderer when it writes motion-vector components.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionVectorUnits {
+    /// Motion vectors are expressed in render-resolution pixels.
+    Pixels,
+    /// Motion vectors are normalized to the render extent.
+    Normalized,
+}
+
+/// Direction of the motion-vector displacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionVectorDirection {
+    /// Vector points from the current pixel to its previous-frame location.
+    CurrentToPrevious,
+    /// Vector points from the previous-frame pixel to its current location.
+    PreviousToCurrent,
+}
+
+/// Per-frame metadata needed before motion vectors and jitter can be tagged
+/// for a future Streamline DLSS SR evaluation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalFrameMetadata {
+    pub render_width: u32,
+    pub render_height: u32,
+    pub motion_vector_width: u32,
+    pub motion_vector_height: u32,
+    pub motion_vector_scale_x: f32,
+    pub motion_vector_scale_y: f32,
+    /// Sub-pixel projection jitter in render-pixel units.
+    pub jitter_x_pixels: f32,
+    pub jitter_y_pixels: f32,
+    pub motion_vector_units: MotionVectorUnits,
+    pub motion_vector_direction: MotionVectorDirection,
+    /// Must be false after camera cuts, resize or any temporal-history reset.
+    pub previous_frame_valid: bool,
+}
+
+/// Rejection reasons for incomplete or ambiguous temporal metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalMetadataError {
+    ZeroRenderExtent,
+    ZeroMotionVectorExtent,
+    MotionVectorExtentMismatch,
+    InvalidMotionVectorScale,
+    InvalidJitter,
+    MissingPreviousFrame,
+}
+
+/// Validate metadata without guessing motion-vector conventions or modifying
+/// renderer resources. This is a CPU-side contract, not proof that the supplied
+/// vectors are accurate or that a previous-frame history texture exists.
+pub fn validate_temporal_frame_metadata(
+    metadata: TemporalFrameMetadata,
+) -> Result<(), TemporalMetadataError> {
+    if metadata.render_width == 0 || metadata.render_height == 0 {
+        return Err(TemporalMetadataError::ZeroRenderExtent);
+    }
+    if metadata.motion_vector_width == 0 || metadata.motion_vector_height == 0 {
+        return Err(TemporalMetadataError::ZeroMotionVectorExtent);
+    }
+    if metadata.motion_vector_width != metadata.render_width
+        || metadata.motion_vector_height != metadata.render_height
+    {
+        return Err(TemporalMetadataError::MotionVectorExtentMismatch);
+    }
+    if !metadata.motion_vector_scale_x.is_finite()
+        || !metadata.motion_vector_scale_y.is_finite()
+        || metadata.motion_vector_scale_x == 0.0
+        || metadata.motion_vector_scale_y == 0.0
+    {
+        return Err(TemporalMetadataError::InvalidMotionVectorScale);
+    }
+    if !metadata.jitter_x_pixels.is_finite() || !metadata.jitter_y_pixels.is_finite() {
+        return Err(TemporalMetadataError::InvalidJitter);
+    }
+    if !metadata.previous_frame_valid {
+        return Err(TemporalMetadataError::MissingPreviousFrame);
+    }
+    Ok(())
+}
+
 /// Resolution plan for a future DLSS pass. This does not resize resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolutionPlan {
@@ -86,79 +167,6 @@ pub struct ResolutionPlan {
     pub render_height: u32,
     pub output_width: u32,
     pub output_height: u32,
-}
-
-
-/// Per-frame temporal metadata required before a DLSS SR evaluation can be
-/// considered. This validates metadata only; it does not create motion
-/// vectors, apply projection jitter, or submit GPU work.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TemporalFrameMetadata {
-    pub render_width: u32,
-    pub render_height: u32,
-    pub output_width: u32,
-    pub output_height: u32,
-    pub motion_vector_width: u32,
-    pub motion_vector_height: u32,
-    /// Projection jitter expressed in render-resolution pixels.
-    pub jitter_x: f32,
-    pub jitter_y: f32,
-    /// Motion-vector conversion scale supplied to the future backend.
-    pub motion_vector_scale_x: f32,
-    pub motion_vector_scale_y: f32,
-    /// A camera cut or other discontinuity requires temporal history reset.
-    pub camera_cut: bool,
-}
-
-/// Why temporal metadata cannot be passed to a future DLSS evaluation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TemporalMetadataError {
-    MissingExtent,
-    MotionVectorExtentMismatch,
-    OutputNotLargerThanRender,
-    NonFiniteJitter,
-    InvalidMotionVectorScale,
-}
-
-impl TemporalFrameMetadata {
-    /// Validate dimensions and finite temporal parameters without touching
-    /// renderer state. DLSS is an upscaler, so output cannot be smaller on
-    /// either axis and at least one axis must grow.
-    pub fn validate(self) -> Result<(), TemporalMetadataError> {
-        if self.render_width == 0 || self.render_height == 0
-            || self.output_width == 0 || self.output_height == 0
-            || self.motion_vector_width == 0 || self.motion_vector_height == 0
-        {
-            return Err(TemporalMetadataError::MissingExtent);
-        }
-        if self.motion_vector_width != self.render_width
-            || self.motion_vector_height != self.render_height
-        {
-            return Err(TemporalMetadataError::MotionVectorExtentMismatch);
-        }
-        if self.output_width < self.render_width
-            || self.output_height < self.render_height
-            || (self.output_width == self.render_width && self.output_height == self.render_height)
-        {
-            return Err(TemporalMetadataError::OutputNotLargerThanRender);
-        }
-        if !self.jitter_x.is_finite() || !self.jitter_y.is_finite() {
-            return Err(TemporalMetadataError::NonFiniteJitter);
-        }
-        if !self.motion_vector_scale_x.is_finite()
-            || !self.motion_vector_scale_y.is_finite()
-            || self.motion_vector_scale_x == 0.0
-            || self.motion_vector_scale_y == 0.0
-        {
-            return Err(TemporalMetadataError::InvalidMotionVectorScale);
-        }
-        Ok(())
-    }
-
-    /// The caller must invalidate accumulated history after a camera cut.
-    pub const fn requires_history_reset(self) -> bool {
-        self.camera_cut
-    }
 }
 
 impl ResolutionPlan {
@@ -178,6 +186,269 @@ impl ResolutionPlan {
 }
 
 
+/// Pixel format for a dedicated DLSS output texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputFormat {
+    R8G8B8A8Unorm,
+    R10G10B10A2Unorm,
+    R16G16B16A16Float,
+}
+
+impl DlssOutputFormat {
+    /// DXGI_FORMAT numeric value, kept independent of the Windows bindings so
+    /// output sizing can be validated on every CI platform.
+    pub const fn dxgi_format(self) -> u32 {
+        match self {
+            Self::R8G8B8A8Unorm => 28,
+            Self::R10G10B10A2Unorm => 24,
+            Self::R16G16B16A16Float => 10,
+        }
+    }
+
+    pub const fn bytes_per_pixel(self) -> u64 {
+        match self {
+            Self::R8G8B8A8Unorm | Self::R10G10B10A2Unorm => 4,
+            Self::R16G16B16A16Float => 8,
+        }
+    }
+}
+
+/// Validated dimensions and format for a dedicated 2D DLSS output texture.
+/// This is an allocation request, not evidence that a GPU resource exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssOutputTargetDesc {
+    pub width: u32,
+    pub height: u32,
+    pub format: DlssOutputFormat,
+    pub estimated_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputTargetDescError {
+    ZeroExtent,
+    ExtentTooLarge,
+    AllocationSizeOverflow,
+}
+
+impl DlssOutputTargetDesc {
+    pub fn new(
+        width: u32,
+        height: u32,
+        format: DlssOutputFormat,
+    ) -> Result<Self, DlssOutputTargetDescError> {
+        const MAX_TEXTURE_DIMENSION: u32 = 16_384;
+        if width == 0 || height == 0 {
+            return Err(DlssOutputTargetDescError::ZeroExtent);
+        }
+        if width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION {
+            return Err(DlssOutputTargetDescError::ExtentTooLarge);
+        }
+        let estimated_bytes = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()))
+            .ok_or(DlssOutputTargetDescError::AllocationSizeOverflow)?;
+        Ok(Self {
+            width,
+            height,
+            format,
+            estimated_bytes,
+        })
+    }
+}
+
+/// Decision for reusing or allocating the dedicated DLSS output texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputAllocationAction {
+    ReuseExisting,
+    AllocateNew,
+}
+
+/// Conservative allocation-planning errors. The estimate is a lower bound;
+/// the caller must still handle a real D3D12 allocation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputAllocationError {
+    BudgetUnavailable,
+    InsufficientBudget { required_bytes: u64, available_bytes: u64 },
+    BudgetEstimateOverflow,
+}
+
+/// Result of checking whether a requested output target can be allocated
+/// without exceeding the adapter's reported *available* local-memory budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssOutputAllocationPlan {
+    pub action: DlssOutputAllocationAction,
+    pub estimated_required_bytes: u64,
+    pub available_bytes: Option<u64>,
+}
+
+impl DlssOutputAllocationPlan {
+    /// Reserve 25% headroom above the pixel payload estimate for driver
+    /// allocation granularity and bookkeeping. This is a conservative
+    /// planning margin, not an exact prediction of DXGI residency cost.
+    pub fn new(
+        current: Option<DlssOutputTargetDesc>,
+        requested: DlssOutputTargetDesc,
+        available_bytes: Option<u64>,
+    ) -> Result<Self, DlssOutputAllocationError> {
+        if current == Some(requested) {
+            return Ok(Self {
+                action: DlssOutputAllocationAction::ReuseExisting,
+                estimated_required_bytes: 0,
+                available_bytes,
+            });
+        }
+        let estimated_required_bytes = requested
+            .estimated_bytes
+            .checked_mul(5)
+            .and_then(|bytes| bytes.checked_add(3))
+            .map(|bytes| bytes / 4)
+            .ok_or(DlssOutputAllocationError::BudgetEstimateOverflow)?;
+        let available = available_bytes.ok_or(DlssOutputAllocationError::BudgetUnavailable)?;
+        if estimated_required_bytes > available {
+            return Err(DlssOutputAllocationError::InsufficientBudget {
+                required_bytes: estimated_required_bytes,
+                available_bytes: available,
+            });
+        }
+        Ok(Self {
+            action: DlssOutputAllocationAction::AllocateNew,
+            estimated_required_bytes,
+            available_bytes,
+        })
+    }
+}
+
+/// Safe CPU-side decision for using or replacing a dedicated DLSS output target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssOutputTargetUseAction {
+    /// The matching resource's previous GPU use has completed.
+    ReuseNow,
+    /// The matching resource is still in use; wait for this submission fence value.
+    WaitForSubmission,
+    /// Allocate a replacement and retire the old resource only after its last use.
+    AllocateReplacement,
+}
+
+/// Lifetime decision for a target that may still be referenced by submitted GPU work.
+///
+/// Submission values must come from the same host fence timeline. This planner
+/// does not wait, allocate, release COM objects or establish cross-queue ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DlssOutputTargetLifetimePlan {
+    pub action: DlssOutputTargetUseAction,
+    pub wait_for_submission: Option<u64>,
+    pub retire_previous_after_submission: Option<u64>,
+    pub allocation: Option<DlssOutputAllocationPlan>,
+}
+
+pub fn plan_dlss_output_target_lifetime(
+    current: Option<DlssOutputTargetDesc>,
+    requested: DlssOutputTargetDesc,
+    current_last_submission: u64,
+    completed_submission: u64,
+    available_bytes: Option<u64>,
+) -> Result<DlssOutputTargetLifetimePlan, DlssOutputAllocationError> {
+    if current == Some(requested) {
+        if current_last_submission > completed_submission {
+            return Ok(DlssOutputTargetLifetimePlan {
+                action: DlssOutputTargetUseAction::WaitForSubmission,
+                wait_for_submission: Some(current_last_submission),
+                retire_previous_after_submission: None,
+                allocation: None,
+            });
+        }
+        return Ok(DlssOutputTargetLifetimePlan {
+            action: DlssOutputTargetUseAction::ReuseNow,
+            wait_for_submission: None,
+            retire_previous_after_submission: None,
+            allocation: Some(DlssOutputAllocationPlan::new(
+                current, requested, available_bytes,
+            )?),
+        });
+    }
+
+    let allocation = DlssOutputAllocationPlan::new(
+        current, requested, available_bytes,
+    )?;
+    Ok(DlssOutputTargetLifetimePlan {
+        action: DlssOutputTargetUseAction::AllocateReplacement,
+        wait_for_submission: None,
+        retire_previous_after_submission: current
+            .and_then(|_| (current_last_submission > completed_submission)
+                .then_some(current_last_submission)),
+        allocation: Some(allocation),
+    })
+}
+
+#[cfg(test)]
+mod dlss_output_target_lifetime_tests {
+    use super::{
+        plan_dlss_output_target_lifetime, DlssOutputTargetDesc as Desc,
+        DlssOutputTargetUseAction as Action, DlssOutputFormat as Format,
+    };
+
+    fn target(width: u32) -> Desc {
+        Desc::new(width, 1080, Format::R8G8B8A8Unorm).unwrap()
+    }
+
+    #[test]
+    fn matching_target_waits_for_its_last_gpu_submission() {
+        let desc = target(1920);
+        let plan = plan_dlss_output_target_lifetime(
+            Some(desc), desc, 42, 41, None,
+        ).unwrap();
+        assert_eq!(plan.action, Action::WaitForSubmission);
+        assert_eq!(plan.wait_for_submission, Some(42));
+        assert_eq!(plan.retire_previous_after_submission, None);
+        assert_eq!(plan.allocation, None);
+    }
+
+    #[test]
+    fn matching_target_is_reused_after_its_submission_completes() {
+        let desc = target(1920);
+        let plan = plan_dlss_output_target_lifetime(
+            Some(desc), desc, 42, 42, None,
+        ).unwrap();
+        assert_eq!(plan.action, Action::ReuseNow);
+        assert_eq!(plan.wait_for_submission, None);
+        assert_eq!(plan.allocation.unwrap().estimated_required_bytes, 0);
+    }
+
+    #[test]
+    fn replacement_keeps_old_target_until_its_last_submission_completes() {
+        let old = target(1920);
+        let new = target(2560);
+        let budget = new.estimated_bytes * 5 / 4;
+        let plan = plan_dlss_output_target_lifetime(
+            Some(old), new, 90, 89, Some(budget),
+        ).unwrap();
+        assert_eq!(plan.action, Action::AllocateReplacement);
+        assert_eq!(plan.retire_previous_after_submission, Some(90));
+        assert_eq!(plan.allocation.unwrap().action, super::DlssOutputAllocationAction::AllocateNew);
+    }
+
+    #[test]
+    fn completed_old_target_needs_no_deferred_retirement() {
+        let old = target(1920);
+        let new = target(1280);
+        let budget = new.estimated_bytes * 5 / 4;
+        let plan = plan_dlss_output_target_lifetime(
+            Some(old), new, 90, 90, Some(budget),
+        ).unwrap();
+        assert_eq!(plan.action, Action::AllocateReplacement);
+        assert_eq!(plan.retire_previous_after_submission, None);
+    }
+
+    #[test]
+    fn replacement_still_obeys_live_budget_policy() {
+        let old = target(1920);
+        let new = target(2560);
+        assert!(plan_dlss_output_target_lifetime(
+            Some(old), new, 90, 89, Some(1),
+        ).is_err());
+    }
+}
+
 /// Minimal resource metadata used to reject incompatible color/depth pairs
 /// before a future temporal upscaler can consume them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +457,10 @@ pub struct TextureInfo {
     pub height: u32,
     pub samples: u32,
     pub dimension: u32,
+    /// Number of array slices in the D3D12 texture resource.
+    pub array_size: u32,
+    /// Raw D3D12_RESOURCE_FLAGS bits from the host resource descriptor.
+    pub flags: u32,
 }
 
 /// Conservative classification of the host-side D3D12 state tracker.
@@ -271,6 +546,7 @@ pub enum DepthPairStatus {
     ExtentMismatch,
     SampleCountMismatch,
     UnsupportedDepthFormat,
+    ShaderResourceDenied,
 }
 
 /// Validate a scene-color texture against its bound depth view.
@@ -296,6 +572,10 @@ pub fn validate_depth_pair(
     }
     if color.samples != depth.samples {
         return DepthPairStatus::SampleCountMismatch;
+    }
+    const DENY_SHADER_RESOURCE: u32 = 0x8;
+    if color.flags & DENY_SHADER_RESOURCE != 0 || depth.flags & DENY_SHADER_RESOURCE != 0 {
+        return DepthPairStatus::ShaderResourceDenied;
     }
     if !DEPTH_FORMATS.contains(&depth_view_format) {
         return DepthPairStatus::UnsupportedDepthFormat;
@@ -529,6 +809,651 @@ pub(crate) fn consume_present_depth_candidate(
         );
     });
     Some(candidate)
+}
+
+
+/// A validated, CPU-side proposal for moving a completed resource into a
+/// shader-resource state. This deliberately does not create or submit a
+/// D3D12 barrier; the caller must still prove queue ownership and ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShaderReadTransitionPlan {
+    pub resource_id: usize,
+    pub before_state: u32,
+    pub after_state: u32,
+    pub recording_list: usize,
+    pub submission: u64,
+    pub barrier_required: bool,
+}
+
+/// Why a proposed shader-read transition was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderReadTransitionError {
+    NullResource,
+    NullRecordingList,
+    RecordingListMismatch,
+    Unsubmitted,
+    SubmissionNotCompleted,
+    UnknownBeforeState,
+    InvalidShaderReadTarget,
+}
+
+/// Validate the identity and completion metadata before a future renderer
+/// integration is allowed to construct a D3D12 transition barrier.
+///
+/// This is a preflight contract only. In particular, completion of one host
+/// submission does not prove that another queue has not changed the resource.
+pub fn plan_shader_read_transition(
+    resource_id: usize,
+    recording_list: usize,
+    expected_recording_list: usize,
+    submission: u64,
+    finished_submission: u64,
+    before_state: u32,
+    after_state: u32,
+) -> Result<ShaderReadTransitionPlan, ShaderReadTransitionError> {
+    if resource_id == 0 {
+        return Err(ShaderReadTransitionError::NullResource);
+    }
+    if recording_list == 0 || expected_recording_list == 0 {
+        return Err(ShaderReadTransitionError::NullRecordingList);
+    }
+    if recording_list != expected_recording_list {
+        return Err(ShaderReadTransitionError::RecordingListMismatch);
+    }
+    if submission == 0 {
+        return Err(ShaderReadTransitionError::Unsubmitted);
+    }
+    if submission > finished_submission {
+        return Err(ShaderReadTransitionError::SubmissionNotCompleted);
+    }
+    if matches!(classify_host_resource_state(before_state), HostResourceStateClass::Unknown) {
+        return Err(ShaderReadTransitionError::UnknownBeforeState);
+    }
+    if !is_shader_resource_readable(after_state) {
+        return Err(ShaderReadTransitionError::InvalidShaderReadTarget);
+    }
+
+    Ok(ShaderReadTransitionPlan {
+        resource_id,
+        before_state,
+        after_state,
+        recording_list,
+        submission,
+        barrier_required: before_state != after_state,
+    })
+}
+
+/// Validate the identity and completion metadata before proposing a transition
+/// into D3D12_UNORDERED_ACCESS. This does not record a barrier or prove
+/// cross-queue ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnorderedAccessTransitionError {
+    NullResource,
+    NullRecordingList,
+    RecordingListMismatch,
+    Unsubmitted,
+    SubmissionNotCompleted,
+    UnknownBeforeState,
+}
+
+/// CPU-only proposal for making the dedicated DLSS output available as a UAV.
+pub fn plan_unordered_access_transition(
+    resource_id: usize,
+    recording_list: usize,
+    expected_recording_list: usize,
+    submission: u64,
+    finished_submission: u64,
+    before_state: u32,
+) -> Result<ShaderReadTransitionPlan, UnorderedAccessTransitionError> {
+    const UNORDERED_ACCESS: u32 = 0x8;
+    if resource_id == 0 {
+        return Err(UnorderedAccessTransitionError::NullResource);
+    }
+    if recording_list == 0 || expected_recording_list == 0 {
+        return Err(UnorderedAccessTransitionError::NullRecordingList);
+    }
+    if recording_list != expected_recording_list {
+        return Err(UnorderedAccessTransitionError::RecordingListMismatch);
+    }
+    if submission == 0 {
+        return Err(UnorderedAccessTransitionError::Unsubmitted);
+    }
+    if submission > finished_submission {
+        return Err(UnorderedAccessTransitionError::SubmissionNotCompleted);
+    }
+    if matches!(classify_host_resource_state(before_state), HostResourceStateClass::Unknown) {
+        return Err(UnorderedAccessTransitionError::UnknownBeforeState);
+    }
+    Ok(ShaderReadTransitionPlan {
+        resource_id,
+        before_state,
+        after_state: UNORDERED_ACCESS,
+        recording_list,
+        submission,
+        barrier_required: before_state != UNORDERED_ACCESS,
+    })
+}
+
+/// All CPU-side evidence required before a future Streamline DLSS SR call.
+///
+/// The resource identifiers and state values must come from the exact completed
+/// guest frame. This function only validates and assembles transition
+/// proposals; it does not record barriers, prove cross-queue ownership, tag
+/// Streamline resources or evaluate DLSS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DlssEvaluationInputs {
+    pub frame: TemporalFramePlan,
+    pub resolution: ResolutionPlan,
+    pub available_inputs: FrameInputs,
+    pub temporal_metadata: TemporalFrameMetadata,
+    /// Actual host texture metadata captured for this exact completed frame.
+    pub color_texture: TextureInfo,
+    pub depth_texture: TextureInfo,
+    pub motion_vectors_texture: TextureInfo,
+    /// Dedicated output texture at the final presentation resolution.
+    pub output_texture: TextureInfo,
+    pub depth_view_format: u32,
+    pub depth_view_dimension: u32,
+    pub color_resource_id: usize,
+    pub depth_resource_id: usize,
+    pub motion_vectors_resource_id: usize,
+    pub output_resource_id: usize,
+    pub recording_list: usize,
+    pub expected_recording_list: usize,
+    pub submission: u64,
+    pub finished_submission: u64,
+    pub color_before_state: u32,
+    pub depth_before_state: u32,
+    pub motion_vectors_before_state: u32,
+    /// Tracked state of the dedicated output resource before DLSS evaluation.
+    pub output_before_state: u32,
+}
+
+/// Why a future DLSS evaluation cannot be prepared from this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DlssEvaluationPlanError {
+    MissingRequiredInputs,
+    RenderExtentMismatch,
+    InvalidColorDepthPair(DepthPairStatus),
+    MotionVectorTextureMismatch,
+    MotionVectorsShaderResourceDenied,
+    OutputTextureMismatch,
+    OutputNotUnorderedAccessCapable,
+    MultisampledInput,
+    TextureArrayNotSupported,
+    OutputIsNotLargerThanRender,
+    JitterDoesNotMatchFrame,
+    TemporalHistoryUnavailable,
+    AliasedResources,
+    InvalidTemporalMetadata(TemporalMetadataError),
+    InvalidResourceTransition(ShaderReadTransitionError),
+    InvalidOutputTransition(UnorderedAccessTransitionError),
+}
+
+/// Validated CPU-side input and transition proposal for one DLSS frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DlssEvaluationPlan {
+    pub frame_index: u64,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub output_resource_id: usize,
+    pub jitter: TemporalJitter,
+    pub reset_history: bool,
+    pub color_transition: ShaderReadTransitionPlan,
+    pub depth_transition: ShaderReadTransitionPlan,
+    pub motion_vectors_transition: ShaderReadTransitionPlan,
+    pub output_transition: ShaderReadTransitionPlan,
+}
+
+/// Assemble a conservative evaluation plan for a single completed frame.
+///
+/// The first frame after a reset is deliberately rejected until valid history
+/// is available. A later Streamline integration can use the reset signal and
+/// initialize history resources explicitly rather than guessing.
+pub fn plan_dlss_evaluation(
+    inputs: DlssEvaluationInputs,
+) -> Result<DlssEvaluationPlan, DlssEvaluationPlanError> {
+    if !inputs.available_inputs.ready() {
+        return Err(DlssEvaluationPlanError::MissingRequiredInputs);
+    }
+
+    let frame = inputs.frame;
+    let resolution = inputs.resolution;
+    let metadata = inputs.temporal_metadata;
+
+    if resolution.render_width != frame.render_width
+        || resolution.render_height != frame.render_height
+        || metadata.render_width != frame.render_width
+        || metadata.render_height != frame.render_height
+    {
+        return Err(DlssEvaluationPlanError::RenderExtentMismatch);
+    }
+    let color_depth_status = validate_depth_pair(
+        inputs.color_texture,
+        inputs.depth_texture,
+        inputs.depth_view_format,
+        inputs.depth_view_dimension,
+    );
+    if color_depth_status != DepthPairStatus::Compatible {
+        return Err(DlssEvaluationPlanError::InvalidColorDepthPair(color_depth_status));
+    }
+    // Streamline DLSS SR consumes resolved 2D inputs. Never pass an MSAA
+    // render target directly; the renderer must resolve it into single-sample
+    // scene-color/depth/motion-vector textures first.
+    if inputs.color_texture.samples != 1
+        || inputs.depth_texture.samples != 1
+        || inputs.motion_vectors_texture.samples != 1
+    {
+        return Err(DlssEvaluationPlanError::MultisampledInput);
+    }
+    // The current input contract is for ordinary Texture2D resources, not
+    // texture arrays. Streamline view tagging must not silently select a slice.
+    if inputs.color_texture.array_size != 1
+        || inputs.depth_texture.array_size != 1
+        || inputs.motion_vectors_texture.array_size != 1
+    {
+        return Err(DlssEvaluationPlanError::TextureArrayNotSupported);
+    }
+    let motion_vectors = inputs.motion_vectors_texture;
+    if motion_vectors.width != frame.render_width
+        || motion_vectors.height != frame.render_height
+        || motion_vectors.dimension != 3
+        || motion_vectors.samples == 0
+    {
+        return Err(DlssEvaluationPlanError::MotionVectorTextureMismatch);
+    }
+    const DENY_SHADER_RESOURCE: u32 = 0x8;
+    if motion_vectors.flags & DENY_SHADER_RESOURCE != 0 {
+        return Err(DlssEvaluationPlanError::MotionVectorsShaderResourceDenied);
+    }
+    if resolution.output_width <= resolution.render_width
+        || resolution.output_height <= resolution.render_height
+    {
+        return Err(DlssEvaluationPlanError::OutputIsNotLargerThanRender);
+    }
+    // DLSS SR needs a distinct final-resolution output target. A swap-chain
+    // back buffer is not assumed to support UAV access; the renderer must
+    // supply a dedicated texture whose descriptor explicitly allows UAVs.
+    let output = inputs.output_texture;
+    if output.width != resolution.output_width
+        || output.height != resolution.output_height
+        || output.dimension != 3
+        || output.samples != 1
+        || output.array_size != 1
+    {
+        return Err(DlssEvaluationPlanError::OutputTextureMismatch);
+    }
+    const ALLOW_UNORDERED_ACCESS: u32 = 0x4;
+    if output.flags & ALLOW_UNORDERED_ACCESS == 0 {
+        return Err(DlssEvaluationPlanError::OutputNotUnorderedAccessCapable);
+    }
+    if metadata.jitter_x_pixels != frame.jitter.x_pixels
+        || metadata.jitter_y_pixels != frame.jitter.y_pixels
+    {
+        return Err(DlssEvaluationPlanError::JitterDoesNotMatchFrame);
+    }
+    if !frame.previous_frame_valid || !metadata.previous_frame_valid || frame.reset_reason.is_some() {
+        return Err(DlssEvaluationPlanError::TemporalHistoryUnavailable);
+    }
+    validate_temporal_frame_metadata(metadata)
+        .map_err(DlssEvaluationPlanError::InvalidTemporalMetadata)?;
+
+    let resources = [
+        inputs.color_resource_id,
+        inputs.depth_resource_id,
+        inputs.motion_vectors_resource_id,
+        inputs.output_resource_id,
+    ];
+    if resources.contains(&0)
+        || resources[0] == resources[1]
+        || resources[0] == resources[2]
+        || resources[1] == resources[2]
+        || resources[3] == resources[0]
+        || resources[3] == resources[1]
+        || resources[3] == resources[2]
+    {
+        return Err(DlssEvaluationPlanError::AliasedResources);
+    }
+
+    const SHADER_READ: u32 = 0xC0;
+    const DEPTH_SHADER_READ: u32 = 0xE0;
+    let transition = |resource_id, before_state, after_state| {
+        plan_shader_read_transition(
+            resource_id,
+            inputs.recording_list,
+            inputs.expected_recording_list,
+            inputs.submission,
+            inputs.finished_submission,
+            before_state,
+            after_state,
+        )
+        .map_err(DlssEvaluationPlanError::InvalidResourceTransition)
+    };
+
+    // Validate the output transition first so its own failure is reported
+    // directly rather than being shadowed by the same shared submission gate
+    // while planning one of the input transitions.
+    let output_transition = plan_unordered_access_transition(
+        inputs.output_resource_id,
+        inputs.recording_list,
+        inputs.expected_recording_list,
+        inputs.submission,
+        inputs.finished_submission,
+        inputs.output_before_state,
+    )
+    .map_err(DlssEvaluationPlanError::InvalidOutputTransition)?;
+
+    Ok(DlssEvaluationPlan {
+        frame_index: frame.frame_index,
+        render_width: resolution.render_width,
+        render_height: resolution.render_height,
+        output_width: resolution.output_width,
+        output_height: resolution.output_height,
+        output_resource_id: inputs.output_resource_id,
+        jitter: frame.jitter,
+        reset_history: false,
+        color_transition: transition(
+            inputs.color_resource_id,
+            inputs.color_before_state,
+            SHADER_READ,
+        )?,
+        depth_transition: transition(
+            inputs.depth_resource_id,
+            inputs.depth_before_state,
+            DEPTH_SHADER_READ,
+        )?,
+        motion_vectors_transition: transition(
+            inputs.motion_vectors_resource_id,
+            inputs.motion_vectors_before_state,
+            SHADER_READ,
+        )?,
+        output_transition,
+    })
+}
+
+#[cfg(test)]
+mod dlss_evaluation_plan_tests {
+    use super::{
+        plan_dlss_evaluation, DepthPairStatus, DlssEvaluationInputs, DlssEvaluationPlanError as Error,
+        FrameInputs, MotionVectorDirection, MotionVectorUnits, ResolutionPlan,
+        TextureInfo, TemporalFrameMetadata, TemporalHistoryResetReason as Reset, TemporalMetadataError,
+        TemporalHistoryTracker as Tracker, ShaderReadTransitionError,
+    };
+
+    fn valid_inputs() -> DlssEvaluationInputs {
+        let mut tracker = Tracker::default();
+        tracker.plan_frame(1, 1280, 720, false, false).unwrap();
+        let frame = tracker.plan_frame(2, 1280, 720, false, false).unwrap();
+        DlssEvaluationInputs {
+            frame,
+            resolution: ResolutionPlan {
+                render_width: 1280,
+                render_height: 720,
+                output_width: 1920,
+                output_height: 1080,
+            },
+            available_inputs: FrameInputs {
+                color: true,
+                depth: true,
+                motion_vectors: true,
+                jitter: true,
+                exposure: false,
+            },
+            temporal_metadata: TemporalFrameMetadata {
+                render_width: 1280,
+                render_height: 720,
+                motion_vector_width: 1280,
+                motion_vector_height: 720,
+                motion_vector_scale_x: 1.0,
+                motion_vector_scale_y: 1.0,
+                jitter_x_pixels: frame.jitter.x_pixels,
+                jitter_y_pixels: frame.jitter.y_pixels,
+                motion_vector_units: MotionVectorUnits::Pixels,
+                motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
+                previous_frame_valid: true,
+            },
+            color_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
+            depth_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
+            motion_vectors_texture: TextureInfo { width: 1280, height: 720, samples: 1, dimension: 3, array_size: 1, flags: 0 },
+            output_texture: TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3, array_size: 1, flags: 0x4 },
+            depth_view_format: 40,
+            depth_view_dimension: 3,
+            color_resource_id: 0x100,
+            depth_resource_id: 0x200,
+            motion_vectors_resource_id: 0x300,
+            output_resource_id: 0x400,
+            recording_list: 0xabc,
+            expected_recording_list: 0xabc,
+            submission: 9,
+            finished_submission: 9,
+            color_before_state: 0x4,
+            depth_before_state: 0x10,
+            motion_vectors_before_state: 0x8,
+            output_before_state: 0,
+        }
+    }
+
+    #[test]
+    fn complete_frame_produces_three_shader_read_transition_proposals() {
+        let plan = plan_dlss_evaluation(valid_inputs()).unwrap();
+        assert_eq!(plan.frame_index, 2);
+        assert_eq!((plan.render_width, plan.render_height), (1280, 720));
+        assert_eq!((plan.output_width, plan.output_height), (1920, 1080));
+        assert_eq!(plan.output_resource_id, 0x400);
+        assert_eq!(plan.color_transition.after_state, 0xC0);
+        assert_eq!(plan.depth_transition.after_state, 0xE0);
+        assert_eq!(plan.motion_vectors_transition.after_state, 0xC0);
+        assert_eq!(plan.output_transition.after_state, 0x8);
+        assert_eq!(plan.output_transition.resource_id, 0x400);
+        assert!(plan.output_transition.barrier_required);
+        assert!(plan.color_transition.barrier_required);
+        assert!(!plan.reset_history);
+    }
+
+    #[test]
+    fn output_transition_requires_known_state_and_completed_exact_submission() {
+        let mut inputs = valid_inputs();
+        inputs.output_before_state = 0x8000_0000;
+        assert!(matches!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidOutputTransition(
+                super::UnorderedAccessTransitionError::UnknownBeforeState
+            ))
+        ));
+
+        let mut inputs = valid_inputs();
+        inputs.finished_submission = inputs.submission - 1;
+        assert!(matches!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidOutputTransition(
+                super::UnorderedAccessTransitionError::SubmissionNotCompleted
+            ))
+        ));
+    }
+
+    #[test]
+    fn mismatched_color_depth_extent_and_depth_format_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.depth_texture.width = 640;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(super::DepthPairStatus::ExtentMismatch))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.depth_view_format = 0;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(super::DepthPairStatus::UnsupportedDepthFormat))
+        );
+    }
+
+    #[test]
+    fn motion_vector_texture_must_match_render_extent_and_be_2d() {
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.height = 360;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.dimension = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorTextureMismatch));
+    }
+
+    #[test]
+    fn multisampled_inputs_are_rejected_until_resolved() {
+        let mut inputs = valid_inputs();
+        inputs.color_texture.samples = 4;
+        inputs.depth_texture.samples = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.samples = 2;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MultisampledInput));
+    }
+
+    #[test]
+    fn output_target_must_be_final_resolution_single_sample_2d_and_uav_capable() {
+        let mut inputs = valid_inputs();
+        inputs.output_texture.width = 1280;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.output_texture.samples = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.output_texture.array_size = 2;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputTextureMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.output_texture.flags = 0;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::OutputNotUnorderedAccessCapable));
+
+        let mut inputs = valid_inputs();
+        inputs.output_resource_id = inputs.color_resource_id;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::AliasedResources));
+    }
+
+    #[test]
+    fn resources_that_deny_shader_resource_views_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.color_texture.flags = 0x8;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(DepthPairStatus::ShaderResourceDenied))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.depth_texture.flags = 0x8;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidColorDepthPair(DepthPairStatus::ShaderResourceDenied))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.flags = 0x8;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::MotionVectorsShaderResourceDenied));
+    }
+
+    #[test]
+    fn texture_arrays_are_rejected_until_slice_views_are_explicit() {
+        let mut inputs = valid_inputs();
+        inputs.color_texture.array_size = 2;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::TextureArrayNotSupported));
+
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_texture.array_size = 4;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::TextureArrayNotSupported));
+    }
+
+    #[test]
+    fn missing_required_input_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.available_inputs.motion_vectors = false;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::MissingRequiredInputs)
+        );
+    }
+
+    #[test]
+    fn mismatched_extent_and_jitter_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.render_width = 640;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::RenderExtentMismatch));
+
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.jitter_x_pixels += 0.125;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::JitterDoesNotMatchFrame));
+    }
+
+    #[test]
+    fn first_frame_or_reset_cannot_be_evaluated_with_missing_history() {
+        let mut inputs = valid_inputs();
+        inputs.frame.previous_frame_valid = false;
+        inputs.frame.reset_reason = Some(Reset::InitialFrame);
+        inputs.temporal_metadata.previous_frame_valid = false;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::TemporalHistoryUnavailable)
+        );
+    }
+
+    #[test]
+    fn resource_aliasing_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.motion_vectors_resource_id = inputs.depth_resource_id;
+        assert_eq!(plan_dlss_evaluation(inputs), Err(Error::AliasedResources));
+    }
+
+    #[test]
+    fn incomplete_submission_and_unknown_states_are_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.finished_submission = 8;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidOutputTransition(
+                super::UnorderedAccessTransitionError::SubmissionNotCompleted
+            ))
+        );
+
+        let mut inputs = valid_inputs();
+        inputs.color_before_state = 0xFFFF;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidResourceTransition(
+                ShaderReadTransitionError::UnknownBeforeState
+            ))
+        );
+    }
+
+    #[test]
+    fn invalid_motion_vector_contract_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.motion_vector_width = 640;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidTemporalMetadata(TemporalMetadataError::MotionVectorExtentMismatch))
+        );
+        let mut inputs = valid_inputs();
+        inputs.temporal_metadata.motion_vector_scale_x = f32::NAN;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::InvalidTemporalMetadata(TemporalMetadataError::InvalidMotionVectorScale))
+        );
+    }
+
+    #[test]
+    fn non_upscaled_output_extent_is_rejected() {
+        let mut inputs = valid_inputs();
+        inputs.resolution.output_width = inputs.resolution.render_width;
+        assert_eq!(
+            plan_dlss_evaluation(inputs),
+            Err(Error::OutputIsNotLargerThanRender)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -774,9 +1699,11 @@ mod tests {
     }
     #[test]
     fn depth_pair_validation_rejects_mismatched_or_untyped_inputs() {
-        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3 };
+        let color = TextureInfo { width: 1920, height: 1080, samples: 1, dimension: 3, array_size: 1, flags: 0 };
         let depth = color;
         assert_eq!(validate_depth_pair(color, depth, 40, 3), DepthPairStatus::Compatible);
+        assert_eq!(validate_depth_pair(TextureInfo { flags: 0x8, ..color }, depth, 40, 3), DepthPairStatus::ShaderResourceDenied);
+        assert_eq!(validate_depth_pair(color, TextureInfo { flags: 0x8, ..depth }, 40, 3), DepthPairStatus::ShaderResourceDenied);
         assert_eq!(validate_depth_pair(color, TextureInfo { width: 1280, ..depth }, 40, 3), DepthPairStatus::ExtentMismatch);
         assert_eq!(validate_depth_pair(color, TextureInfo { samples: 4, ..depth }, 40, 3), DepthPairStatus::SampleCountMismatch);
         assert_eq!(validate_depth_pair(color, depth, 39, 3), DepthPairStatus::UnsupportedDepthFormat);
@@ -788,240 +1715,601 @@ mod tests {
 
 
 #[cfg(test)]
+mod shader_read_transition_tests {
+    use super::{
+        plan_shader_read_transition, ShaderReadTransitionError as Error,
+    };
+
+    const PIXEL_READ: u32 = 0x80;
+    const NON_PIXEL_READ: u32 = 0x40;
+    const RENDER_TARGET: u32 = 0x4;
+
+    #[test]
+    fn completed_matching_submission_produces_a_transition_plan() {
+        let plan = plan_shader_read_transition(
+            0x100, 0xabc, 0xabc, 12, 12, RENDER_TARGET,
+            PIXEL_READ | NON_PIXEL_READ,
+        ).unwrap();
+        assert_eq!(plan.resource_id, 0x100);
+        assert_eq!(plan.before_state, RENDER_TARGET);
+        assert_eq!(plan.after_state, PIXEL_READ | NON_PIXEL_READ);
+        assert!(plan.barrier_required);
+    }
+
+    #[test]
+    fn already_shader_readable_state_does_not_need_a_barrier() {
+        let plan = plan_shader_read_transition(
+            0x100, 0xabc, 0xabc, 12, 12, PIXEL_READ, PIXEL_READ,
+        ).unwrap();
+        assert!(!plan.barrier_required);
+    }
+
+    #[test]
+    fn rejects_null_resource_and_recording_list() {
+        assert_eq!(
+            plan_shader_read_transition(0, 0xabc, 0xabc, 1, 1, 0, PIXEL_READ),
+            Err(Error::NullResource)
+        );
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0, 0, 1, 1, 0, PIXEL_READ),
+            Err(Error::NullRecordingList)
+        );
+    }
+
+    #[test]
+    fn rejects_a_different_recording_list() {
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xdef, 1, 1, 0, PIXEL_READ),
+            Err(Error::RecordingListMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_unsubmitted_and_incomplete_submissions() {
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 0, 0, 0, PIXEL_READ),
+            Err(Error::Unsubmitted)
+        );
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 9, 8, 0, PIXEL_READ),
+            Err(Error::SubmissionNotCompleted)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_source_and_non_shader_target_states() {
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 1, 1, 0x1000, PIXEL_READ),
+            Err(Error::UnknownBeforeState)
+        );
+        assert_eq!(
+            plan_shader_read_transition(0x100, 0xabc, 0xabc, 1, 1, 0, RENDER_TARGET),
+            Err(Error::InvalidShaderReadTarget)
+        );
+    }
+}
+
+
+
+#[cfg(test)]
 mod temporal_metadata_tests {
-    use super::{TemporalFrameMetadata, TemporalMetadataError};
+    use super::{
+        validate_temporal_frame_metadata, MotionVectorDirection, MotionVectorUnits,
+        TemporalFrameMetadata, TemporalMetadataError as Error,
+    };
 
     fn valid_metadata() -> TemporalFrameMetadata {
         TemporalFrameMetadata {
-            render_width: 1707,
-            render_height: 960,
-            output_width: 2560,
-            output_height: 1440,
-            motion_vector_width: 1707,
-            motion_vector_height: 960,
-            jitter_x: 0.25,
-            jitter_y: -0.25,
+            render_width: 1920,
+            render_height: 1080,
+            motion_vector_width: 1920,
+            motion_vector_height: 1080,
             motion_vector_scale_x: 1.0,
             motion_vector_scale_y: 1.0,
-            camera_cut: false,
+            jitter_x_pixels: 0.25,
+            jitter_y_pixels: -0.25,
+            motion_vector_units: MotionVectorUnits::Pixels,
+            motion_vector_direction: MotionVectorDirection::CurrentToPrevious,
+            previous_frame_valid: true,
         }
     }
 
     #[test]
-    fn accepts_matching_temporal_inputs_and_upscaled_output() {
-        assert_eq!(valid_metadata().validate(), Ok(()));
+    fn accepts_complete_finite_temporal_metadata() {
+        assert_eq!(validate_temporal_frame_metadata(valid_metadata()), Ok(()));
     }
 
     #[test]
-    fn rejects_zero_sized_inputs() {
-        assert_eq!(TemporalFrameMetadata { render_width: 0, ..valid_metadata() }.validate(), Err(TemporalMetadataError::MissingExtent));
+    fn rejects_zero_render_or_motion_vector_extent() {
+        let mut metadata = valid_metadata();
+        metadata.render_width = 0;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Err(Error::ZeroRenderExtent));
+
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_height = 0;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Err(Error::ZeroMotionVectorExtent));
     }
 
     #[test]
-    fn rejects_motion_vectors_with_different_extent() {
-        assert_eq!(TemporalFrameMetadata { motion_vector_width: 1280, ..valid_metadata() }.validate(), Err(TemporalMetadataError::MotionVectorExtentMismatch));
+    fn rejects_motion_vector_extent_mismatch() {
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_width = 960;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::MotionVectorExtentMismatch)
+        );
     }
 
     #[test]
-    fn rejects_downscaling_and_same_size_output() {
-        assert_eq!(TemporalFrameMetadata { output_width: 1280, ..valid_metadata() }.validate(), Err(TemporalMetadataError::OutputNotLargerThanRender));
-        let same_size = TemporalFrameMetadata { output_width: 1707, output_height: 960, ..valid_metadata() };
-        assert_eq!(same_size.validate(), Err(TemporalMetadataError::OutputNotLargerThanRender));
+    fn rejects_zero_or_non_finite_motion_vector_scale() {
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_scale_x = 0.0;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::InvalidMotionVectorScale)
+        );
+
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_scale_y = f32::INFINITY;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::InvalidMotionVectorScale)
+        );
     }
 
     #[test]
-    fn rejects_non_finite_jitter_and_invalid_motion_vector_scale() {
-        assert_eq!(TemporalFrameMetadata { jitter_x: f32::NAN, ..valid_metadata() }.validate(), Err(TemporalMetadataError::NonFiniteJitter));
-        assert_eq!(TemporalFrameMetadata { motion_vector_scale_y: 0.0, ..valid_metadata() }.validate(), Err(TemporalMetadataError::InvalidMotionVectorScale));
-        assert_eq!(TemporalFrameMetadata { motion_vector_scale_x: f32::INFINITY, ..valid_metadata() }.validate(), Err(TemporalMetadataError::InvalidMotionVectorScale));
+    fn rejects_non_finite_jitter() {
+        let mut metadata = valid_metadata();
+        metadata.jitter_x_pixels = f32::NAN;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Err(Error::InvalidJitter));
     }
 
     #[test]
-    fn camera_cut_requests_history_reset() {
-        assert!(!valid_metadata().requires_history_reset());
-        assert!(TemporalFrameMetadata { camera_cut: true, ..valid_metadata() }.requires_history_reset());
+    fn rejects_missing_previous_frame_history() {
+        let mut metadata = valid_metadata();
+        metadata.previous_frame_valid = false;
+        assert_eq!(
+            validate_temporal_frame_metadata(metadata),
+            Err(Error::MissingPreviousFrame)
+        );
+    }
+
+    #[test]
+    fn accepts_explicit_normalized_vectors_and_reverse_direction() {
+        let mut metadata = valid_metadata();
+        metadata.motion_vector_units = MotionVectorUnits::Normalized;
+        metadata.motion_vector_direction = MotionVectorDirection::PreviousToCurrent;
+        assert_eq!(validate_temporal_frame_metadata(metadata), Ok(()));
     }
 }
 
 
-/// Why temporal history must be discarded before a future DLSS SR evaluation.
+/// Why temporal reconstruction history is unavailable for the current frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalHistoryResetReason {
-    FirstFrame,
-    CameraCut,
+    InitialFrame,
     RenderExtentChanged,
-    OutputExtentChanged,
+    CameraCut,
+    ExplicitReset,
     FrameDiscontinuity,
 }
 
-/// Result of checking whether the previous frame's temporal history is usable.
+/// Result of advancing the CPU-side temporal history lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TemporalHistoryDecision {
-    pub use_previous_history: bool,
+pub struct TemporalHistoryStatus {
+    /// True only when the immediately preceding frame is a valid history source.
+    pub previous_frame_valid: bool,
+    /// Set when the current frame must start a new temporal history sequence.
     pub reset_reason: Option<TemporalHistoryResetReason>,
 }
 
-/// CPU-side continuity contract for temporal history.
+/// Invalid input to the temporal history lifecycle tracker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalHistoryError {
+    ZeroRenderExtent,
+}
+
+/// Tracks frame continuity and reset conditions for a future temporal upscaler.
 ///
-/// This tracks frame sequence and dimensions only. It does not allocate,
-/// retain, clear or synchronize GPU history resources; a renderer integration
-/// must perform those operations before using temporal history.
+/// This is metadata bookkeeping only. It does not allocate, retain, clear or
+/// validate GPU history textures, and it must not be used as proof that history
+/// pixels or motion vectors are available.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TemporalHistoryTracker {
-    previous_frame: Option<u64>,
-    previous_render_extent: Option<(u32, u32)>,
-    previous_output_extent: Option<(u32, u32)>,
+    previous_frame: Option<(u64, u32, u32)>,
 }
 
 impl TemporalHistoryTracker {
-    /// Observe one frame and decide whether the preceding frame can be reused.
-    /// Invalid metadata is rejected without changing the tracked history.
-    pub fn observe(
+    /// Advance the history lifecycle for one rendered frame.
+    ///
+    /// Camera cuts and explicit resets invalidate the prior frame. Resize,
+    /// first-frame and non-consecutive frame indices are detected automatically.
+    pub fn begin_frame(
         &mut self,
-        frame: u64,
-        metadata: TemporalFrameMetadata,
-    ) -> Result<TemporalHistoryDecision, TemporalMetadataError> {
-        metadata.validate()?;
+        frame_index: u64,
+        render_width: u32,
+        render_height: u32,
+        camera_cut: bool,
+        explicit_reset: bool,
+    ) -> Result<TemporalHistoryStatus, TemporalHistoryError> {
+        if render_width == 0 || render_height == 0 {
+            return Err(TemporalHistoryError::ZeroRenderExtent);
+        }
 
         let reset_reason = match self.previous_frame {
-            None => Some(TemporalHistoryResetReason::FirstFrame),
-            Some(_) if metadata.camera_cut => Some(TemporalHistoryResetReason::CameraCut),
-            Some(previous) if previous.checked_add(1) != Some(frame) => {
-                Some(TemporalHistoryResetReason::FrameDiscontinuity)
-            }
-            Some(_) if self.previous_render_extent != Some((metadata.render_width, metadata.render_height)) => {
+            None => Some(TemporalHistoryResetReason::InitialFrame),
+            Some((_, width, height)) if width != render_width || height != render_height => {
                 Some(TemporalHistoryResetReason::RenderExtentChanged)
             }
-            Some(_) if self.previous_output_extent != Some((metadata.output_width, metadata.output_height)) => {
-                Some(TemporalHistoryResetReason::OutputExtentChanged)
+            Some(_) if camera_cut => Some(TemporalHistoryResetReason::CameraCut),
+            Some((_, _, _)) if explicit_reset => {
+                Some(TemporalHistoryResetReason::ExplicitReset)
             }
-            Some(_) => None,
+            Some((previous_index, _, _))
+                if previous_index.checked_add(1) != Some(frame_index) =>
+            {
+                Some(TemporalHistoryResetReason::FrameDiscontinuity)
+            }
+            Some((_, _, _)) => None,
         };
 
-        self.previous_frame = Some(frame);
-        self.previous_render_extent = Some((metadata.render_width, metadata.render_height));
-        self.previous_output_extent = Some((metadata.output_width, metadata.output_height));
-
-        Ok(TemporalHistoryDecision {
-            use_previous_history: reset_reason.is_none(),
+        self.previous_frame = Some((frame_index, render_width, render_height));
+        Ok(TemporalHistoryStatus {
+            previous_frame_valid: reset_reason.is_none(),
             reset_reason,
         })
     }
 
-    /// Forget the tracked sequence after device loss, swap-chain recreation or
-    /// any renderer event that invalidates all temporal history.
+    /// Forget the tracked frame so the next call starts a fresh history sequence.
     pub fn invalidate(&mut self) {
         self.previous_frame = None;
-        self.previous_render_extent = None;
-        self.previous_output_extent = None;
     }
 }
 
 #[cfg(test)]
 mod temporal_history_tests {
     use super::{
-        TemporalFrameMetadata, TemporalHistoryResetReason, TemporalHistoryTracker,
+        TemporalHistoryError, TemporalHistoryResetReason as Reset,
+        TemporalHistoryTracker,
     };
 
-    fn metadata() -> TemporalFrameMetadata {
-        TemporalFrameMetadata {
-            render_width: 1707,
-            render_height: 960,
-            output_width: 2560,
-            output_height: 1440,
-            motion_vector_width: 1707,
-            motion_vector_height: 960,
-            jitter_x: 0.25,
-            jitter_y: -0.25,
-            motion_vector_scale_x: 1.0,
-            motion_vector_scale_y: 1.0,
-            camera_cut: false,
+    #[test]
+    fn first_frame_starts_without_previous_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        let status = tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        assert!(!status.previous_frame_valid);
+        assert_eq!(status.reset_reason, Some(Reset::InitialFrame));
+    }
+
+    #[test]
+    fn consecutive_frames_preserve_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(10, 1920, 1080, false, false).unwrap();
+        let status = tracker.begin_frame(11, 1920, 1080, false, false).unwrap();
+        assert!(status.previous_frame_valid);
+        assert_eq!(status.reset_reason, None);
+    }
+
+    #[test]
+    fn resize_invalidates_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        let status = tracker.begin_frame(2, 1280, 720, false, false).unwrap();
+        assert_eq!(status.reset_reason, Some(Reset::RenderExtentChanged));
+        assert!(!status.previous_frame_valid);
+    }
+
+    #[test]
+    fn camera_cut_and_explicit_reset_invalidate_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        assert_eq!(
+            tracker.begin_frame(2, 1920, 1080, true, false).unwrap().reset_reason,
+            Some(Reset::CameraCut)
+        );
+        assert_eq!(
+            tracker.begin_frame(3, 1920, 1080, false, true).unwrap().reset_reason,
+            Some(Reset::ExplicitReset)
+        );
+        assert!(tracker.begin_frame(4, 1920, 1080, false, false).unwrap().previous_frame_valid);
+    }
+
+    #[test]
+    fn skipped_or_repeated_frame_indices_invalidate_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        assert_eq!(
+            tracker.begin_frame(3, 1920, 1080, false, false).unwrap().reset_reason,
+            Some(Reset::FrameDiscontinuity)
+        );
+        assert_eq!(
+            tracker.begin_frame(3, 1920, 1080, false, false).unwrap().reset_reason,
+            Some(Reset::FrameDiscontinuity)
+        );
+    }
+
+    #[test]
+    fn explicit_invalidation_and_zero_extent_are_handled() {
+        let mut tracker = TemporalHistoryTracker::default();
+        assert_eq!(
+            tracker.begin_frame(1, 0, 1080, false, false),
+            Err(TemporalHistoryError::ZeroRenderExtent)
+        );
+        tracker.begin_frame(1, 1920, 1080, false, false).unwrap();
+        tracker.invalidate();
+        assert_eq!(
+            tracker.begin_frame(2, 1920, 1080, false, false).unwrap().reset_reason,
+            Some(Reset::InitialFrame)
+        );
+    }
+}
+
+
+/// Sub-pixel projection offset for one temporal frame, in render-pixel units.
+///
+/// The sequence is deterministic and centered around zero. The renderer must
+/// still apply this offset to its projection matrix and pass the same values
+/// to the upscaler; generating the values alone does not jitter the scene.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalJitter {
+    pub x_pixels: f32,
+    pub y_pixels: f32,
+}
+
+fn halton(index: u64, base: u64) -> f64 {
+    let mut index = index;
+    let mut fraction = 1.0;
+    let mut value = 0.0;
+    while index > 0 {
+        fraction /= base as f64;
+        value += fraction * (index % base) as f64;
+        index /= base;
+    }
+    value
+}
+
+/// Generate deterministic Halton(2, 3) sub-pixel jitter for a frame.
+///
+/// Values are centered in the interval [-0.5, 0.5) pixels. This is only a
+/// sequence generator: callers remain responsible for applying the offset
+/// consistently to the camera projection and the Streamline frame constants.
+pub fn temporal_jitter(frame_index: u64) -> TemporalJitter {
+    let sample = frame_index.saturating_add(1);
+    TemporalJitter {
+        x_pixels: (halton(sample, 2) - 0.5) as f32,
+        y_pixels: (halton(sample, 3) - 0.5) as f32,
+    }
+}
+
+/// One coherent CPU-side temporal frame description.
+///
+/// The frame index, render extent, history-validity decision and jitter sample
+/// are produced together so callers cannot accidentally select jitter from a
+/// different frame than the history tracker. This does not apply projection
+/// jitter, create motion vectors or prove that GPU history textures exist.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalFramePlan {
+    pub frame_index: u64,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub jitter: TemporalJitter,
+    pub previous_frame_valid: bool,
+    pub reset_reason: Option<TemporalHistoryResetReason>,
+}
+
+impl TemporalHistoryTracker {
+    /// Advance temporal history and produce the matching frame's jitter.
+    pub fn plan_frame(
+        &mut self,
+        frame_index: u64,
+        render_width: u32,
+        render_height: u32,
+        camera_cut: bool,
+        explicit_reset: bool,
+    ) -> Result<TemporalFramePlan, TemporalHistoryError> {
+        let history = self.begin_frame(
+            frame_index,
+            render_width,
+            render_height,
+            camera_cut,
+            explicit_reset,
+        )?;
+        Ok(TemporalFramePlan {
+            frame_index,
+            render_width,
+            render_height,
+            jitter: temporal_jitter(frame_index),
+            previous_frame_valid: history.previous_frame_valid,
+            reset_reason: history.reset_reason,
+        })
+    }
+}
+
+#[cfg(test)]
+mod temporal_frame_plan_tests {
+    use super::{
+        temporal_jitter, TemporalHistoryError, TemporalHistoryResetReason as Reset,
+        TemporalHistoryTracker,
+    };
+
+    #[test]
+    fn frame_plan_keeps_jitter_and_history_on_the_same_frame() {
+        let mut tracker = TemporalHistoryTracker::default();
+        let first = tracker.plan_frame(40, 1920, 1080, false, false).unwrap();
+        assert_eq!(first.frame_index, 40);
+        assert_eq!((first.render_width, first.render_height), (1920, 1080));
+        assert_eq!(first.jitter, temporal_jitter(40));
+        assert!(!first.previous_frame_valid);
+        assert_eq!(first.reset_reason, Some(Reset::InitialFrame));
+
+        let next = tracker.plan_frame(41, 1920, 1080, false, false).unwrap();
+        assert_eq!(next.jitter, temporal_jitter(41));
+        assert!(next.previous_frame_valid);
+        assert_eq!(next.reset_reason, None);
+    }
+
+    #[test]
+    fn frame_plan_reports_resize_and_camera_cut_resets() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.plan_frame(1, 1920, 1080, false, false).unwrap();
+        let resized = tracker.plan_frame(2, 1280, 720, false, false).unwrap();
+        assert_eq!(resized.reset_reason, Some(Reset::RenderExtentChanged));
+        assert!(!resized.previous_frame_valid);
+
+        let cut = tracker.plan_frame(3, 1280, 720, true, false).unwrap();
+        assert_eq!(cut.reset_reason, Some(Reset::CameraCut));
+        assert!(!cut.previous_frame_valid);
+    }
+
+    #[test]
+    fn frame_plan_reports_explicit_and_discontinuous_resets() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.plan_frame(10, 1280, 720, false, false).unwrap();
+        let explicit = tracker.plan_frame(11, 1280, 720, false, true).unwrap();
+        assert_eq!(explicit.reset_reason, Some(Reset::ExplicitReset));
+        let skipped = tracker.plan_frame(13, 1280, 720, false, false).unwrap();
+        assert_eq!(skipped.reset_reason, Some(Reset::FrameDiscontinuity));
+    }
+
+    #[test]
+    fn zero_extent_is_rejected_without_advancing_the_tracker() {
+        let mut tracker = TemporalHistoryTracker::default();
+        assert_eq!(
+            tracker.plan_frame(1, 0, 720, false, false),
+            Err(TemporalHistoryError::ZeroRenderExtent)
+        );
+        let valid = tracker.plan_frame(1, 1280, 720, false, false).unwrap();
+        assert_eq!(valid.reset_reason, Some(Reset::InitialFrame));
+    }
+}
+
+#[cfg(test)]
+mod temporal_jitter_tests {
+    use super::{temporal_jitter, TemporalJitter};
+
+    #[test]
+    fn first_sample_is_deterministic() {
+        assert_eq!(
+            temporal_jitter(0),
+            TemporalJitter {
+                x_pixels: 0.0,
+                y_pixels: -1.0 / 6.0,
+            }
+        );
+    }
+
+    #[test]
+    fn sequence_is_deterministic_and_changes_between_frames() {
+        let first = temporal_jitter(4);
+        assert_eq!(first, temporal_jitter(4));
+        assert_ne!(first, temporal_jitter(5));
+    }
+
+    #[test]
+    fn offsets_stay_within_half_a_render_pixel() {
+        for frame in 0..4096 {
+            let jitter = temporal_jitter(frame);
+            assert!(jitter.x_pixels >= -0.5 && jitter.x_pixels < 0.5);
+            assert!(jitter.y_pixels >= -0.5 && jitter.y_pixels < 0.5);
         }
     }
 
     #[test]
-    fn first_frame_resets_then_contiguous_frame_can_reuse_history() {
-        let mut tracker = TemporalHistoryTracker::default();
-        let first = tracker.observe(10, metadata()).unwrap();
-        assert_eq!(first.reset_reason, Some(TemporalHistoryResetReason::FirstFrame));
-        assert!(!first.use_previous_history);
-        let next = tracker.observe(11, metadata()).unwrap();
-        assert_eq!(next.reset_reason, None);
-        assert!(next.use_previous_history);
+    fn maximum_frame_index_stays_finite() {
+        let jitter = temporal_jitter(u64::MAX);
+        assert!(jitter.x_pixels.is_finite());
+        assert!(jitter.y_pixels.is_finite());
+    }
+}
+
+#[cfg(test)]
+mod dlss_output_target_desc_tests {
+    use super::{DlssOutputFormat as Format, DlssOutputTargetDesc as Desc, DlssOutputTargetDescError as Error};
+
+    #[test]
+    fn accepts_supported_output_formats_and_estimates_memory() {
+        let sdr = Desc::new(1920, 1080, Format::R8G8B8A8Unorm).unwrap();
+        assert_eq!(sdr.estimated_bytes, 1920 * 1080 * 4);
+        let hdr = Desc::new(3840, 2160, Format::R16G16B16A16Float).unwrap();
+        assert_eq!(hdr.estimated_bytes, 3840 * 2160 * 8);
+        assert_eq!(Format::R10G10B10A2Unorm.dxgi_format(), 24);
     }
 
     #[test]
-    fn camera_cut_resets_history_for_that_frame() {
-        let mut tracker = TemporalHistoryTracker::default();
-        tracker.observe(1, metadata()).unwrap();
-        let cut = TemporalFrameMetadata { camera_cut: true, ..metadata() };
-        let decision = tracker.observe(2, cut).unwrap();
-        assert_eq!(decision.reset_reason, Some(TemporalHistoryResetReason::CameraCut));
-        assert!(!decision.use_previous_history);
-        assert!(tracker.observe(3, metadata()).unwrap().use_previous_history);
+    fn rejects_zero_or_out_of_range_dimensions() {
+        assert_eq!(Desc::new(0, 1080, Format::R8G8B8A8Unorm), Err(Error::ZeroExtent));
+        assert_eq!(Desc::new(1920, 0, Format::R8G8B8A8Unorm), Err(Error::ZeroExtent));
+        assert_eq!(Desc::new(16_385, 1080, Format::R8G8B8A8Unorm), Err(Error::ExtentTooLarge));
+        assert_eq!(Desc::new(1920, 16_385, Format::R8G8B8A8Unorm), Err(Error::ExtentTooLarge));
     }
 
     #[test]
-    fn render_or_output_resize_resets_history() {
-        let mut tracker = TemporalHistoryTracker::default();
-        tracker.observe(1, metadata()).unwrap();
-        let render_resize = TemporalFrameMetadata {
-            render_width: 1600,
-            motion_vector_width: 1600,
-            ..metadata()
-        };
-        assert_eq!(
-            tracker.observe(2, render_resize).unwrap().reset_reason,
-            Some(TemporalHistoryResetReason::RenderExtentChanged)
-        );
-        let output_resize = TemporalFrameMetadata { output_width: 1920, ..render_resize };
-        assert_eq!(
-            tracker.observe(3, output_resize).unwrap().reset_reason,
-            Some(TemporalHistoryResetReason::OutputExtentChanged)
-        );
+    fn output_size_estimate_is_exact_for_8k_formats() {
+        let rgba8 = Desc::new(7680, 4320, Format::R8G8B8A8Unorm).unwrap();
+        let rgba16f = Desc::new(7680, 4320, Format::R16G16B16A16Float).unwrap();
+        assert_eq!(rgba8.estimated_bytes, 132_710_400);
+        assert_eq!(rgba16f.estimated_bytes, 265_420_800);
+    }
+}
+
+
+#[cfg(test)]
+mod dlss_output_allocation_policy_tests {
+    use super::{
+        DlssOutputAllocationAction as Action, DlssOutputAllocationError as Error,
+        DlssOutputAllocationPlan as Plan, DlssOutputFormat as Format,
+        DlssOutputTargetDesc as Desc,
+    };
+
+    fn target() -> Desc {
+        Desc::new(1920, 1080, Format::R8G8B8A8Unorm).unwrap()
     }
 
     #[test]
-    fn skipped_or_repeated_frame_resets_history() {
-        let mut tracker = TemporalHistoryTracker::default();
-        tracker.observe(20, metadata()).unwrap();
-        assert_eq!(
-            tracker.observe(22, metadata()).unwrap().reset_reason,
-            Some(TemporalHistoryResetReason::FrameDiscontinuity)
-        );
-        assert_eq!(
-            tracker.observe(22, metadata()).unwrap().reset_reason,
-            Some(TemporalHistoryResetReason::FrameDiscontinuity)
-        );
+    fn reuses_an_identical_target_without_needing_budget_information() {
+        let desc = target();
+        let plan = Plan::new(Some(desc), desc, None).unwrap();
+        assert_eq!(plan.action, Action::ReuseExisting);
+        assert_eq!(plan.estimated_required_bytes, 0);
     }
 
     #[test]
-    fn frame_counter_overflow_never_reuses_history() {
-        let mut tracker = TemporalHistoryTracker::default();
-        tracker.observe(u64::MAX, metadata()).unwrap();
+    fn requires_a_known_budget_before_new_allocation() {
         assert_eq!(
-            tracker.observe(u64::MAX, metadata()).unwrap().reset_reason,
-            Some(TemporalHistoryResetReason::FrameDiscontinuity)
+            Plan::new(None, target(), None),
+            Err(Error::BudgetUnavailable)
         );
     }
 
     #[test]
-    fn invalid_metadata_does_not_advance_history_state() {
-        let mut tracker = TemporalHistoryTracker::default();
-        tracker.observe(5, metadata()).unwrap();
-        let invalid = TemporalFrameMetadata { motion_vector_width: 0, ..metadata() };
-        assert!(tracker.observe(6, invalid).is_err());
-        assert!(tracker.observe(6, metadata()).unwrap().use_previous_history);
+    fn rejects_allocation_when_headroom_would_exceed_budget() {
+        let desc = target();
+        let required = desc.estimated_bytes * 5 / 4;
+        assert_eq!(
+            Plan::new(None, desc, Some(required - 1)),
+            Err(Error::InsufficientBudget {
+                required_bytes: required,
+                available_bytes: required - 1,
+            })
+        );
     }
 
     #[test]
-    fn explicit_invalidation_makes_the_next_frame_a_first_frame() {
-        let mut tracker = TemporalHistoryTracker::default();
-        tracker.observe(1, metadata()).unwrap();
-        tracker.invalidate();
-        assert_eq!(
-            tracker.observe(2, metadata()).unwrap().reset_reason,
-            Some(TemporalHistoryResetReason::FirstFrame)
-        );
+    fn allows_new_allocation_when_budget_covers_headroom() {
+        let desc = target();
+        let required = desc.estimated_bytes * 5 / 4;
+        let plan = Plan::new(None, desc, Some(required)).unwrap();
+        assert_eq!(plan.action, Action::AllocateNew);
+        assert_eq!(plan.estimated_required_bytes, required);
+    }
+
+    #[test]
+    fn reallocates_when_extent_or_format_changes() {
+        let current = target();
+        let requested = Desc::new(2560, 1440, Format::R16G16B16A16Float).unwrap();
+        let required = requested.estimated_bytes * 5 / 4;
+        let plan = Plan::new(Some(current), requested, Some(required)).unwrap();
+        assert_eq!(plan.action, Action::AllocateNew);
+        assert_eq!(plan.estimated_required_bytes, required);
     }
 }
