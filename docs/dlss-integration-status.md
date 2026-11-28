@@ -66,3 +66,8 @@ A passing CI run can validate Rust code, unit tests and Windows compilation. It 
 TemporalHistoryTracker now checks a contiguous frame sequence and stable render/output extents before a future temporal evaluation may reuse history. It requests a reset on the first frame, camera cuts, render-size changes, output-size changes, skipped or repeated frame IDs, and explicit invalidation (for example after device loss or swap-chain recreation). Invalid TemporalFrameMetadata is rejected without mutating the tracker, so a malformed frame cannot silently advance the history sequence.
 
 This is a deterministic CPU-side contract only. It does not allocate, clear, retain or synchronize GPU history textures, and it does not prove that motion vectors or jitter are actually produced by the renderer. The future Streamline integration must connect these decisions to real history-resource lifecycle operations.
+
+
+### Validation status for the temporal-history branch
+
+The branch's latest commit currently has no associated GitHub Actions workflow runs or check runs. The CI workflow file is present on both this branch and the `a-publier` base branch, so the absence of results is not evidence of a test failure or success. Treat validation as pending until GitHub actually starts and completes the jobs.
