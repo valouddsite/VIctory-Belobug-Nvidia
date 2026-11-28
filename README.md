@@ -200,3 +200,6 @@ This repository preserves and builds on work from other projects and contributor
 ## License
 
 GPL-3.0-or-later, as VIctory. See [LICENSE](LICENSE). The file excluded from that license is identified in [docs/asset-policy.md](docs/asset-policy.md).
+
+
+DLSS temporal groundwork also includes a tested CPU-side history-continuity contract: it rejects invalid frame metadata without advancing state, and requests a history reset on the first frame, camera cuts, render/output extent changes, skipped or repeated frame IDs, and explicit renderer invalidation. This contract does not allocate or clear GPU history resources and does not activate DLSS.
