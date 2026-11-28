@@ -886,7 +886,7 @@ impl TemporalHistoryTracker {
         let reset_reason = match self.previous_frame {
             None => Some(TemporalHistoryResetReason::FirstFrame),
             Some(_) if metadata.camera_cut => Some(TemporalHistoryResetReason::CameraCut),
-            Some(previous) if frame != previous.saturating_add(1) => {
+            Some(previous) if previous.checked_add(1) != Some(frame) => {
                 Some(TemporalHistoryResetReason::FrameDiscontinuity)
             }
             Some(_) if self.previous_render_extent != Some((metadata.render_width, metadata.render_height)) => {
