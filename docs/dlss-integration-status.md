@@ -59,3 +59,10 @@ Official references:
 ## Verification boundary
 
 A passing CI run can validate Rust code, unit tests and Windows compilation. It cannot certify DLSS operation on the user's RTX 5060. That requires the official runtime components, a complete renderer integration and a physical hardware test.
+
+
+### Temporal history continuity contract
+
+TemporalHistoryTracker now checks a contiguous frame sequence and stable render/output extents before a future temporal evaluation may reuse history. It requests a reset on the first frame, camera cuts, render-size changes, output-size changes, skipped or repeated frame IDs, and explicit invalidation (for example after device loss or swap-chain recreation). Invalid TemporalFrameMetadata is rejected without mutating the tracker, so a malformed frame cannot silently advance the history sequence.
+
+This is a deterministic CPU-side contract only. It does not allocate, clear, retain or synchronize GPU history textures, and it does not prove that motion vectors or jitter are actually produced by the renderer. The future Streamline integration must connect these decisions to real history-resource lifecycle operations.
