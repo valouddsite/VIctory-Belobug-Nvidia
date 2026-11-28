@@ -996,6 +996,16 @@ mod temporal_history_tests {
     }
 
     #[test]
+    fn frame_counter_overflow_never_reuses_history() {
+        let mut tracker = TemporalHistoryTracker::default();
+        tracker.observe(u64::MAX, metadata()).unwrap();
+        assert_eq!(
+            tracker.observe(u64::MAX, metadata()).unwrap().reset_reason,
+            Some(TemporalHistoryResetReason::FrameDiscontinuity)
+        );
+    }
+
+    #[test]
     fn invalid_metadata_does_not_advance_history_state() {
         let mut tracker = TemporalHistoryTracker::default();
         tracker.observe(5, metadata()).unwrap();
