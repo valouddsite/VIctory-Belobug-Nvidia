@@ -88,6 +88,79 @@ pub struct ResolutionPlan {
     pub output_height: u32,
 }
 
+
+/// Per-frame temporal metadata required before a DLSS SR evaluation can be
+/// considered. This validates metadata only; it does not create motion
+/// vectors, apply projection jitter, or submit GPU work.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalFrameMetadata {
+    pub render_width: u32,
+    pub render_height: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub motion_vector_width: u32,
+    pub motion_vector_height: u32,
+    /// Projection jitter expressed in render-resolution pixels.
+    pub jitter_x: f32,
+    pub jitter_y: f32,
+    /// Motion-vector conversion scale supplied to the future backend.
+    pub motion_vector_scale_x: f32,
+    pub motion_vector_scale_y: f32,
+    /// A camera cut or other discontinuity requires temporal history reset.
+    pub camera_cut: bool,
+}
+
+/// Why temporal metadata cannot be passed to a future DLSS evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalMetadataError {
+    MissingExtent,
+    MotionVectorExtentMismatch,
+    OutputNotLargerThanRender,
+    NonFiniteJitter,
+    InvalidMotionVectorScale,
+}
+
+impl TemporalFrameMetadata {
+    /// Validate dimensions and finite temporal parameters without touching
+    /// renderer state. DLSS is an upscaler, so output cannot be smaller on
+    /// either axis and at least one axis must grow.
+    pub fn validate(self) -> Result<(), TemporalMetadataError> {
+        if self.render_width == 0 || self.render_height == 0
+            || self.output_width == 0 || self.output_height == 0
+            || self.motion_vector_width == 0 || self.motion_vector_height == 0
+        {
+            return Err(TemporalMetadataError::MissingExtent);
+        }
+        if self.motion_vector_width != self.render_width
+            || self.motion_vector_height != self.render_height
+        {
+            return Err(TemporalMetadataError::MotionVectorExtentMismatch);
+        }
+        if self.output_width < self.render_width
+            || self.output_height < self.render_height
+            || (self.output_width == self.render_width && self.output_height == self.render_height)
+        {
+            return Err(TemporalMetadataError::OutputNotLargerThanRender);
+        }
+        if !self.jitter_x.is_finite() || !self.jitter_y.is_finite() {
+            return Err(TemporalMetadataError::NonFiniteJitter);
+        }
+        if !self.motion_vector_scale_x.is_finite()
+            || !self.motion_vector_scale_y.is_finite()
+            || self.motion_vector_scale_x == 0.0
+            || self.motion_vector_scale_y == 0.0
+        {
+            return Err(TemporalMetadataError::InvalidMotionVectorScale);
+        }
+        Ok(())
+    }
+
+    /// The caller must invalidate accumulated history after a camera cut.
+    pub const fn requires_history_reset(self) -> bool {
+        self.camera_cut
+    }
+}
+
 impl ResolutionPlan {
     pub fn new(output_width: u32, output_height: u32, quality: Quality) -> Option<Self> {
         if output_width == 0 || output_height == 0 {
@@ -711,4 +784,61 @@ mod tests {
         assert_eq!(validate_depth_pair(color, TextureInfo { width: 0, ..depth }, 40, 3), DepthPairStatus::MissingExtent);
     }
 
+}
+
+
+#[cfg(test)]
+mod temporal_metadata_tests {
+    use super::{TemporalFrameMetadata, TemporalMetadataError};
+
+    fn valid_metadata() -> TemporalFrameMetadata {
+        TemporalFrameMetadata {
+            render_width: 1707,
+            render_height: 960,
+            output_width: 2560,
+            output_height: 1440,
+            motion_vector_width: 1707,
+            motion_vector_height: 960,
+            jitter_x: 0.25,
+            jitter_y: -0.25,
+            motion_vector_scale_x: 1.0,
+            motion_vector_scale_y: 1.0,
+            camera_cut: false,
+        }
+    }
+
+    #[test]
+    fn accepts_matching_temporal_inputs_and_upscaled_output() {
+        assert_eq!(valid_metadata().validate(), Ok(()));
+    }
+
+    #[test]
+    fn rejects_zero_sized_inputs() {
+        assert_eq!(TemporalFrameMetadata { render_width: 0, ..valid_metadata() }.validate(), Err(TemporalMetadataError::MissingExtent));
+    }
+
+    #[test]
+    fn rejects_motion_vectors_with_different_extent() {
+        assert_eq!(TemporalFrameMetadata { motion_vector_width: 1280, ..valid_metadata() }.validate(), Err(TemporalMetadataError::MotionVectorExtentMismatch));
+    }
+
+    #[test]
+    fn rejects_downscaling_and_same_size_output() {
+        assert_eq!(TemporalFrameMetadata { output_width: 1280, ..valid_metadata() }.validate(), Err(TemporalMetadataError::OutputNotLargerThanRender));
+        let same_size = TemporalFrameMetadata { output_width: 1707, output_height: 960, ..valid_metadata() };
+        assert_eq!(same_size.validate(), Err(TemporalMetadataError::OutputNotLargerThanRender));
+    }
+
+    #[test]
+    fn rejects_non_finite_jitter_and_invalid_motion_vector_scale() {
+        assert_eq!(TemporalFrameMetadata { jitter_x: f32::NAN, ..valid_metadata() }.validate(), Err(TemporalMetadataError::NonFiniteJitter));
+        assert_eq!(TemporalFrameMetadata { motion_vector_scale_y: 0.0, ..valid_metadata() }.validate(), Err(TemporalMetadataError::InvalidMotionVectorScale));
+        assert_eq!(TemporalFrameMetadata { motion_vector_scale_x: f32::INFINITY, ..valid_metadata() }.validate(), Err(TemporalMetadataError::InvalidMotionVectorScale));
+    }
+
+    #[test]
+    fn camera_cut_requests_history_reset() {
+        assert!(!valid_metadata().requires_history_reset());
+        assert!(TemporalFrameMetadata { camera_cut: true, ..valid_metadata() }.requires_history_reset());
+    }
 }
