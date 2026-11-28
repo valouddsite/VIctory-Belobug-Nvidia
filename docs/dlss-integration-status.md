@@ -16,6 +16,7 @@ That is a presentation path, not a DLSS integration. At this boundary the render
 - an explicit `NotIntegrated` backend state;
 - a one-time warning when `VICTORY_DLSS` is requested, while leaving the existing presentation path unchanged;
 - a pure color/depth compatibility validator for 2D extent, sample count and typed DSV format;
+- unit tests covering valid metadata, zero extents, motion-vector extent mismatch, downscale/equal-size rejection, non-finite jitter, invalid motion-vector scales and camera-cut history reset;
 - a pure `TemporalFrameMetadata` validator for render/output/motion-vector extents, upscaling direction, finite pixel-space jitter and motion-vector scales, plus an explicit camera-cut history-reset signal; this is a contract only and does not produce temporal data or change projection matrices;
 - frame-scoped retention of compatible color/depth candidates, keyed by the exact guest color-resource identity and the upcoming present frame;
 - consumption only when that exact color resource is presented with the matching host-present serial; ambiguous color targets paired with different depth resources are rejected, and retained host resources live through the presentation call;
